@@ -269,7 +269,12 @@
       ultimo = texto;
       dados = JSON.parse(texto);
       $("negocio").textContent = dados.negocio;
-      if (primeiro) { diaSel = new URLSearchParams(location.search).get("data") || dados.dias[0].data; primeiro = false; }
+      if (primeiro) {
+        // começa no dia pedido na URL, ou hoje, ou no próximo dia aberto se hoje a barbearia estiver fechada
+        const aberto = dados.dias.find(d => d.aberto) || dados.dias[0];
+        diaSel = new URLSearchParams(location.search).get("data") || (dados.dias[0].aberto ? dados.dias[0].data : aberto.data);
+        primeiro = false;
+      }
       detectarMudancas();
       desenhar();
     } catch (_) {

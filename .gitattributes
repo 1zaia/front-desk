@@ -1,0 +1,4 @@
+# Scripts do Windows precisam de CRLF para o cmd.exe ler direito
+*.cmd text eol=crlf
+*.sh text eol=lf
+*.yaml text eol=lf

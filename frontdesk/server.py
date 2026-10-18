@@ -8,15 +8,18 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, RedirectResponse
 
 from mcp.server import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
+from mcp_types import ToolAnnotations
 
 from frontdesk import agenda, agente, db, ensaio
 from frontdesk.agenda import ErroAgenda
@@ -59,8 +62,8 @@ def _juntar(itens: list[str]) -> str:
     return itens[0] if len(itens) == 1 else ", ".join(itens[:-1]) + " ou " + itens[-1]
 
 
-@mcp.tool()
-def listar_servicos() -> dict:
+@mcp.tool(title="Listar serviços e preços", annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False))
+def listar_servicos() -> dict[str, Any]:
     """Lista os serviços oferecidos pelo negócio, com duração e preço."""
     with _conn() as conn:
         servicos = db.listar_servicos(conn)
@@ -69,13 +72,13 @@ def listar_servicos() -> dict:
     return {"ok": True, "fala": f"Na {negocio} temos: " + "; ".join(itens) + ".", "servicos": servicos}
 
 
-@mcp.tool()
+@mcp.tool(title="Consultar horários livres", annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False))
 def consultar_horarios_livres(
     data: Annotated[str, Field(description="Dia desejado: 2026-10-23, 23/10, hoje, amanhã ou o dia da semana (ex.: sexta).")],
     servico: Annotated[str, Field(description="Nome do serviço, ex.: corte, barba, corte e barba.")],
     periodo: Annotated[str | None, Field(description="Opcional: manhã, tarde ou noite.")] = None,
     profissional: Annotated[str | None, Field(description="Opcional: nome do profissional preferido.")] = None,
-) -> dict:
+) -> dict[str, Any]:
     """Mostra os horários livres para um serviço num dia, opcionalmente por período e profissional."""
     momento = agenda.agora()
     try:
@@ -83,10 +86,13 @@ def consultar_horarios_livres(
             d = agenda.interpretar_data(data, momento.date())
             s = agenda.buscar_servico(conn, servico)
             p = agenda.buscar_profissional(conn, profissional)
-            livres = agenda.horarios_livres(conn, d, s, momento, periodo, p)
+            aberto = agenda._funcionamento(conn, d) is not None
+            livres = agenda.horarios_livres(conn, d, s, momento, periodo, p) if aberto else []
     except ErroAgenda as e:
         return _erro(e)
     quando = agenda.falar_data(d, momento.date())
+    if not aberto:
+        return {"ok": True, "fala": f"Não abrimos {quando}.", "data": d.isoformat(), "aberto": False, "horarios": []}
     trecho = f" de {periodo}" if periodo else ""
     if not livres:
         return {"ok": True, "fala": f"Não tenho horário livre para {s.nome.lower()} {quando}{trecho}.", "data": d.isoformat(), "horarios": []}
@@ -105,14 +111,14 @@ def consultar_horarios_livres(
     }
 
 
-@mcp.tool()
+@mcp.tool(title="Agendar horário", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
 def agendar(
     cliente: Annotated[str, Field(description="Nome do cliente.")],
     servico: Annotated[str, Field(description="Nome do serviço.")],
     data: Annotated[str, Field(description="Dia: 2026-10-23, 23/10, hoje, amanhã ou o dia da semana.")],
     horario: Annotated[str, Field(description="Horário de início, ex.: 9h, 9:30, 14h30.")],
     profissional: Annotated[str | None, Field(description="Opcional: profissional desejado.")] = None,
-) -> dict:
+) -> dict[str, Any]:
     """Marca um horário. Confere o funcionamento e se o horário está livre antes de gravar."""
     momento = agenda.agora()
     try:
@@ -131,11 +137,11 @@ def agendar(
     }
 
 
-@mcp.tool()
+@mcp.tool(title="Cancelar horário", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False))
 def cancelar(
     cliente: Annotated[str, Field(description="Nome do cliente.")],
     data: Annotated[str | None, Field(description="Opcional: dia do agendamento, se o cliente tiver mais de um.")] = None,
-) -> dict:
+) -> dict[str, Any]:
     """Cancela o próximo agendamento do cliente (ou o do dia informado)."""
     momento = agenda.agora()
     try:
@@ -153,13 +159,13 @@ def cancelar(
     return {"ok": True, "fala": f"Cancelei {_resumo_ag(ag, momento.date())}.", "agendamento": ag}
 
 
-@mcp.tool()
+@mcp.tool(title="Reagendar horário", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False))
 def reagendar(
     cliente: Annotated[str, Field(description="Nome do cliente.")],
     nova_data: Annotated[str, Field(description="Novo dia.")],
     novo_horario: Annotated[str, Field(description="Novo horário, ex.: 16h.")],
     data_atual: Annotated[str | None, Field(description="Opcional: dia do agendamento atual, se houver mais de um.")] = None,
-) -> dict:
+) -> dict[str, Any]:
     """Muda o dia ou o horário de um agendamento, mantendo o profissional quando possível."""
     momento = agenda.agora()
     try:
@@ -180,10 +186,10 @@ def reagendar(
     return {"ok": True, "fala": f"Feito! Seu horário mudou para {_quando(ag, momento.date())}.", "agendamento": ag}
 
 
-@mcp.tool()
+@mcp.tool(title="Resumo do dia para o dono", annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False))
 def resumo_do_dia(
     data: Annotated[str | None, Field(description="Opcional: dia do resumo. Padrão: hoje.")] = None,
-) -> dict:
+) -> dict[str, Any]:
     """Resumo para o dono: quantos clientes, próximo atendimento, receita prevista e tempo livre."""
     momento = agenda.agora()
     try:
@@ -266,9 +272,36 @@ WEB = Path(__file__).resolve().parent / "web"
 log = logging.getLogger("frontdesk")
 
 
+LIMITE_POR_IP = int(os.environ.get("FRONTDESK_LIMITE_POR_IP", "40"))  # falas por IP a cada 10 minutos
+LIMITE_DIARIO = int(os.environ.get("FRONTDESK_LIMITE_DIARIO", "600"))  # falas por dia no servidor todo
+_falas_por_ip: dict[str, list[float]] = {}
+_falas_hoje: dict[str, int] = {}
+_bedrock_fora: dict = {"ate": 0.0, "aviso": ""}  # no modo auto, até quando pular o Bedrock depois de uma falha
+
+
+def _dentro_do_limite(request: Request) -> bool:
+    """Protege os créditos da AWS num endpoint público: limite por IP e teto diário."""
+    encaminhado = request.headers.get("x-forwarded-for", "")
+    ip = encaminhado.split(",")[0].strip() or (request.client.host if request.client else "?")
+    agora = time.time()
+    recentes = [t for t in _falas_por_ip.get(ip, []) if agora - t < 600]
+    dia = date.today().isoformat()
+    if len(recentes) >= LIMITE_POR_IP or _falas_hoje.get(dia, 0) >= LIMITE_DIARIO:
+        _falas_por_ip[ip] = recentes
+        return False
+    recentes.append(agora)
+    _falas_por_ip[ip] = recentes
+    if dia not in _falas_hoje:  # virou o dia: zera a contagem
+        _falas_hoje.clear()
+    _falas_hoje[dia] = _falas_hoje.get(dia, 0) + 1
+    return True
+
+
 @mcp.custom_route("/api/conversa", methods=["POST"])
 async def api_conversa(request: Request) -> JSONResponse:
     """Uma fala do cliente para o agente no Bedrock. Corpo: {"texto": "...", "sessao": "opcional"}."""
+    if not _dentro_do_limite(request):
+        return JSONResponse({"erro": "Muitas falas em pouco tempo. Espere alguns minutos e tente de novo."}, status_code=429)
     try:
         corpo = await request.json()
     except ValueError:
@@ -280,9 +313,26 @@ async def api_conversa(request: Request) -> JSONResponse:
         return JSONResponse({"erro": "Fala longa demais."}, status_code=400)
     with _conn() as conn:
         negocio = db.nome_do_negocio(conn)
+    modo = os.environ.get("FRONTDESK_AGENTE", "bedrock").lower()
+    sessao = corpo.get("sessao") or None
     try:
-        modo = ensaio if os.environ.get("FRONTDESK_AGENTE", "").lower() == "ensaio" else agente
-        resultado = await modo.responder(texto, corpo.get("sessao") or None, negocio=negocio)
+        if modo == "ensaio":
+            resultado = await ensaio.responder(texto, sessao, negocio=negocio)
+        elif modo == "auto" and time.time() < _bedrock_fora["ate"]:
+            # o Bedrock falhou há pouco: não insiste a cada fala, segue no modo ensaio por alguns minutos
+            resultado = await ensaio.responder(texto, sessao, negocio=negocio)
+            resultado["aviso"] = _bedrock_fora["aviso"]
+        else:
+            try:
+                resultado = await agente.responder(texto, sessao, negocio=negocio)
+            except agente.ErroAgente as e:
+                if modo != "auto":
+                    raise
+                # modo auto (usado no deploy): se o Bedrock falhar, a demo continua no modo ensaio, avisando na tela
+                log.warning("Bedrock indisponível, usando o modo ensaio: %s", e)
+                _bedrock_fora.update(ate=time.time() + 300, aviso=f"Bedrock indisponível agora, respondendo em modo ensaio. Motivo: {e}")
+                resultado = await ensaio.responder(texto, sessao, negocio=negocio)
+                resultado["aviso"] = _bedrock_fora["aviso"]
     except agente.ErroAgente as e:  # credencial expirada, modelo sem acesso, rede: mostra na tela em vez de travar
         log.warning("Falha no agente: %s", e, exc_info=e.__cause__)
         return JSONResponse({"erro": str(e)}, status_code=502)
@@ -312,9 +362,26 @@ async def inicio(_: Request) -> RedirectResponse:
     return RedirectResponse("/demo")
 
 
+def _seguranca_de_transporte() -> TransportSecuritySettings | None:
+    """Proteção contra DNS rebinding do SDK, liberando também o domínio público do deploy.
+
+    Sem isso, atrás de um proxy (Caddy, load balancer) o SDK responde 421 "Invalid Host header",
+    porque só aceita localhost. FRONTDESK_HOSTS lista os domínios públicos, separados por vírgula.
+    """
+    publicos = [h.strip() for h in os.environ.get("FRONTDESK_HOSTS", "").split(",") if h.strip()]
+    if not publicos:
+        return None  # o SDK aplica o padrão: só localhost
+    locais = ["127.0.0.1", "localhost", "[::1]"]
+    hosts = [f"{h}{porta}" for h in locais + publicos for porta in ("", ":*")]
+    origens = [f"http://{h}:*" for h in locais] + [f"https://{h}" for h in publicos]
+    return TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origens)
+
+
 def app():
     """App ASGI (para uvicorn ou deploy)."""
-    return mcp.streamable_http_app(stateless_http=True, json_response=True)
+    return mcp.streamable_http_app(
+        stateless_http=True, json_response=True, transport_security=_seguranca_de_transporte()
+    )
 
 
 def main() -> None:

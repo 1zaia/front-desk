@@ -6,7 +6,6 @@ chama as mesmas ferramentas do servidor MCP, pelo mesmo caminho do agente de ver
 """
 from __future__ import annotations
 
-import json
 import re
 import time
 import unicodedata
@@ -19,6 +18,7 @@ from frontdesk import agente
 
 NOME_MODO = "modo ensaio (sem Bedrock)"
 DIAS = ["segunda", "terca", "quarta", "quinta", "sexta", "sabado", "domingo"]
+NOMES_DIAS = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
 NAO_NOMES = {
     "corte", "barba", "cabelo", "pigmentacao", "dia", "hoje", "amanha", "manha", "tarde", "noite",
     "horario", "sexta", "segunda", "terca", "quarta", "quinta", "sabado", "domingo", "sim", "nao",
@@ -58,9 +58,9 @@ def _data(t: str) -> str | None:
     m = re.search(r"\b(\d{1,2}/\d{1,2})\b", t)
     if m:
         return m.group(1)
-    for d in DIAS:
+    for i, d in enumerate(DIAS):
         if re.search(rf"\b{d}\b", t):
-            return d
+            return NOMES_DIAS[i]
     return None
 
 
@@ -119,7 +119,12 @@ def _intencao(t: str) -> str:
         return "resumo"
     if re.search(r"quanto custa|quanto e|preco|valor|quais servicos|que servicos|o que voces fazem|tabela", t):
         return "servicos"
+    if re.search(r"\babre(m)?\b|\bfunciona(m)?\b|horario de funcionamento|\bfecha(m)?\b|esta aberto|estao abertos", t) and not _servico(t):
+        return "funcionamento"
     return "agendar"
+
+
+SAUDACOES = {"oi", "ola", "bom", "boa", "dia", "tarde", "noite", "tudo", "bem", "e", "ai", "opa", "alo"}
 
 
 async def responder(texto: str, sessao_id: str | None = None, servidor: Any = None, negocio: str = "") -> dict:
@@ -158,11 +163,7 @@ async def responder(texto: str, sessao_id: str | None = None, servidor: Any = No
                 args = {k: v for k, v in args.items() if v}
                 t1 = time.perf_counter()
                 r = await mcp.call_tool(nome, args)
-                bruto = "".join(getattr(c, "text", "") for c in r.content if getattr(c, "type", "") == "text")
-                try:
-                    dados = json.loads(bruto)
-                except json.JSONDecodeError:
-                    dados = {"ok": not r.is_error, "fala": bruto}
+                dados = agente._dados_do_resultado(r)
                 chamadas.append({"ferramenta": nome, "argumentos": args, "ms": round((time.perf_counter() - t1) * 1000),
                                  "ok": bool(dados.get("ok")), "fala": dados.get("fala", "")})
                 return dados
@@ -213,11 +214,27 @@ async def _decidir(est: dict, intencao: str, t: str, usar) -> str:
             est.pop("horario", None)
         return r["fala"]
 
+    if intencao == "funcionamento":
+        dia = _data(t) or "hoje"
+        r = await usar("consultar_horarios_livres", {"data": dia, "servico": "corte"})
+        if r.get("ok") and r.get("horarios"):
+            est["data"] = dia
+            return f"Abrimos sim. {r['fala']}"
+        return r["fala"]
+
     # agendar
-    if re.fullmatch(r"(oi|ola|bom dia|boa tarde|boa noite|e ai)( tudo bem)?", t):
+    if t and set(t.split()) <= SAUDACOES:
         return "Olá! Quer marcar um horário? É só dizer o serviço e o dia."
     if not est.get("servico"):
-        return "Claro! Qual serviço você quer: corte, barba, corte e barba ou pigmentação?"
+        partes = []
+        if est.get("data"):
+            partes.append(est["data"])
+        if est.get("horario"):
+            partes.append(f"às {est['horario']}")
+        pergunta = "qual serviço você quer: corte, barba, corte e barba ou pigmentação?"
+        if partes:
+            return f"Claro! Para {' '.join(partes)}, {pergunta}"
+        return f"Claro! {pergunta[0].upper()}{pergunta[1:]}"
     if not est.get("data"):
         return f"Para qual dia você quer o {est['servico']}?"
     if not est.get("horario"):

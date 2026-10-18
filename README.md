@@ -30,7 +30,9 @@ As ferramentas de desenvolvedor da Alexa+ estão em preview fechado, então a de
 O agente usa as credenciais padrão da AWS. Quem entra com `aws login` precisa do extra `crt` do botocore (já está no `requirements.txt` como `boto3[crt]`). Variáveis:
 - `AWS_PROFILE` e `AWS_REGION` (padrão `us-east-2`).
 - `FRONTDESK_MODELO`: modelos ou perfis de inferência do Bedrock, separados por vírgula, em ordem de preferência (padrão: Nova Lite, Nova Micro e Nova 2 Lite). Se um estiver sem cota ou sem acesso, o agente passa para o próximo.
-- `FRONTDESK_AGENTE=ensaio`: troca o agente do Bedrock por um agente simples de regras, para testar a demo sem o modelo. Ele usa as mesmas ferramentas MCP, e a tela mostra "modo ensaio".
+- `FRONTDESK_AGENTE`: `bedrock` (padrão), `ensaio` (agente simples de regras, sem o modelo, para testar a demo; usa as mesmas ferramentas MCP e a tela mostra "modo ensaio") ou `auto` (Bedrock e, se ele falhar, modo ensaio com aviso na tela; é o que o deploy usa).
+- `FRONTDESK_HOSTS`: domínios públicos aceitos pelo servidor MCP quando ele roda atrás de um proxy (ex.: `front-desk.exemplo.com`). Sem isso, o SDK só aceita `localhost` e responde 421.
+- `FRONTDESK_LIMITE_POR_IP` e `FRONTDESK_LIMITE_DIARIO`: limite de falas por IP a cada 10 minutos (padrão 40) e por dia (padrão 600), para proteger os créditos da AWS.
 - `FRONTDESK_MCP_URL`: servidor MCP que o agente usa (padrão: o próprio servidor).
 
 ## Status
@@ -39,7 +41,8 @@ O agente usa as credenciais padrão da AWS. Quem entra com `aws login` precisa d
 - [x] As seis ferramentas de agenda, com testes
 - [x] Simulador de voz com agente no Amazon Bedrock
 - [x] Painel do dono ao vivo
-- [ ] Deploy na AWS
+- [x] Template de deploy na AWS (EC2 + HTTPS + papel IAM para o Nova)
+- [ ] Deploy publicado
 
 ## Rodar localmente
 Requer Python 3.10 ou superior.
@@ -58,6 +61,9 @@ Variáveis opcionais:
 - `FRONTDESK_DB`: caminho do banco SQLite (padrão: `frontdesk.db` na raiz).
 - `FRONTDESK_DEMO=0`: não cria os agendamentos de exemplo.
 - `FRONTDESK_AGORA=2026-10-23T08:00`: fixa o relógio, útil para gravar a demo.
+
+## Publicar na AWS
+Uma instância EC2 com HTTPS (Caddy) e papel IAM só para o Amazon Nova, criada por CloudFormation. Passo a passo, custos e limpeza em [`deploy/README.md`](deploy/README.md).
 
 ## Testar
 ```bash
