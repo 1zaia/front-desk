@@ -146,3 +146,35 @@ def test_todos_sem_cota_explica(monkeypatch):
         anyio.run(lambda: agente.responder("oi", servidor=_servidor(), converse=converse))
     assert "cota diária" in str(erro.value) and "FRONTDESK_AGENTE=ensaio" in str(erro.value)
     agente._pausados.clear()
+
+
+def test_modo_auto_cai_para_o_ensaio(tmp_path, monkeypatch):
+    """No deploy (FRONTDESK_AGENTE=auto), se o Bedrock falhar a conversa continua no modo ensaio, com aviso."""
+    from starlette.testclient import TestClient
+    from frontdesk import server
+
+    async def falha(*a, **k):
+        raise agente.ErroAgente("A conta da AWS está sem cota diária no Bedrock")
+
+    monkeypatch.setenv("FRONTDESK_AGENTE", "auto")
+    monkeypatch.setenv("FRONTDESK_MCP_URL", "local")
+    monkeypatch.setattr(agente, "responder", falha)
+    monkeypatch.setattr(server, "_falas_por_ip", {})
+    monkeypatch.setattr(server, "_bedrock_fora", {"ate": 0.0, "aviso": ""})
+    with TestClient(server.app()) as c:
+        r = c.post("/api/conversa", json={"texto": "quanto custa o corte?"})
+    dados = r.json()
+    assert r.status_code == 200
+    assert dados["modelo"].startswith("modo ensaio") and "sem cota" in dados["aviso"]
+    assert dados["chamadas"][0]["ferramenta"] == "listar_servicos"
+    # nos próximos minutos o servidor nem tenta o Bedrock: vai direto para o ensaio
+    chamadas = []
+
+    async def conta(*a, **k):
+        chamadas.append(1)
+        raise agente.ErroAgente("não deveria ser chamado")
+
+    monkeypatch.setattr(agente, "responder", conta)
+    with TestClient(server.app()) as c:
+        r = c.post("/api/conversa", json={"texto": "oi"})
+    assert r.status_code == 200 and chamadas == [] and r.json()["aviso"]

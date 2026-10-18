@@ -10,7 +10,8 @@ Configuração por variáveis de ambiente:
 - FRONTDESK_MODELO: um ou mais modelos/perfis de inferência separados por vírgula, em ordem de preferência
   (padrão: us.amazon.nova-lite-v1:0, us.amazon.nova-micro-v1:0, us.amazon.nova-2-lite-v1:0). Se um modelo
   estiver sem cota ou sem acesso, o agente passa para o próximo.
-- FRONTDESK_MCP_URL: endereço do servidor MCP (padrão: o próprio servidor, http://127.0.0.1:PORT/mcp).
+- FRONTDESK_MCP_URL: endereço do servidor MCP (padrão: o próprio servidor, http://127.0.0.1:PORT/mcp;
+  "local" usa o servidor do mesmo processo, sem HTTP).
 - AWS_REGION / AWS_PROFILE: Região e perfil da AWS (padrão: us-east-2 e as credenciais padrão do boto3).
 """
 from __future__ import annotations
@@ -146,8 +147,16 @@ def ferramentas_para_bedrock(ferramentas) -> list[dict]:
     return specs
 
 
-def _texto_do_resultado(resultado) -> str:
-    return "".join(getattr(c, "text", "") for c in resultado.content if getattr(c, "type", "") == "text")
+def _dados_do_resultado(resultado) -> dict:
+    """Usa o structuredContent do MCP; se não vier, lê o JSON do conteúdo em texto."""
+    if isinstance(getattr(resultado, "structured_content", None), dict):
+        return resultado.structured_content
+    bruto = "".join(getattr(c, "text", "") for c in resultado.content if getattr(c, "type", "") == "text")
+    try:
+        dados = json.loads(bruto)
+    except json.JSONDecodeError:
+        return {"ok": not resultado.is_error, "fala": bruto}
+    return dados if isinstance(dados, dict) else {"ok": not resultado.is_error, "fala": bruto}
 
 
 # ------------------------------------------------------------------ Bedrock
@@ -231,8 +240,13 @@ def _instrucoes(negocio: str) -> str:
     )
 
 
-def _url_mcp_padrao() -> str:
-    return os.environ.get("FRONTDESK_MCP_URL") or f"http://127.0.0.1:{os.environ.get('PORT', '8000')}/mcp"
+def _url_mcp_padrao():
+    """Servidor MCP do agente: uma URL, ou "local" para usar o servidor do próprio processo (sem HTTP)."""
+    url = os.environ.get("FRONTDESK_MCP_URL") or f"http://127.0.0.1:{os.environ.get('PORT', '8000')}/mcp"
+    if url == "local":
+        from frontdesk.server import mcp
+        return mcp
+    return url
 
 
 def _aparar_historico(mensagens: list[dict]) -> list[dict]:
@@ -327,11 +341,7 @@ async def _rodadas(alvo, opcoes, mensagens, chamadas, negocio, converse, modelos
                 t0 = time.perf_counter()
                 try:
                     r = await mcp_cliente.call_tool(pedido["name"], argumentos)
-                    bruto = _texto_do_resultado(r)
-                    try:
-                        dados = json.loads(bruto)
-                    except json.JSONDecodeError:
-                        dados = {"ok": not r.is_error, "fala": bruto}
+                    dados = _dados_do_resultado(r)
                     erro = bool(r.is_error)
                 except Exception as e:  # falha de rede ou ferramenta desconhecida: o modelo precisa saber
                     dados, erro = {"ok": False, "fala": f"Erro ao chamar a ferramenta: {e}"}, True

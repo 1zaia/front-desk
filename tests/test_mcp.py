@@ -127,3 +127,80 @@ def test_conversa_sem_texto(servidor):
     with pytest.raises(urllib.error.HTTPError) as erro:
         urllib.request.urlopen(req)
     assert erro.value.code == 400
+
+
+def test_anotacoes_e_saida_estruturada(servidor):
+    """Ferramentas de leitura e de escrita bem marcadas, e resposta em structuredContent."""
+    async def rodar():
+        async with Client(servidor + "/mcp", mode="legacy") as c:
+            ferramentas = {t.name: t for t in (await c.list_tools()).tools}
+            r = await c.call_tool("listar_servicos", {})
+            return ferramentas, r
+
+    ferramentas, r = anyio.run(rodar)
+    for nome in ("listar_servicos", "consultar_horarios_livres", "resumo_do_dia"):
+        assert ferramentas[nome].annotations.read_only_hint is True
+    assert ferramentas["cancelar"].annotations.destructive_hint is True
+    assert ferramentas["agendar"].annotations.read_only_hint is False
+    assert all(t.title for t in ferramentas.values())
+    assert all(t.output_schema for t in ferramentas.values())
+    assert r.structured_content["ok"] is True and "Corte" in r.structured_content["fala"]
+
+
+def test_latencia_das_ferramentas(servidor):
+    """O Alexa+ pede ida e volta abaixo de 500 ms; aqui cada chamada tem de ficar bem abaixo disso."""
+    async def rodar():
+        async with Client(servidor + "/mcp", mode="legacy") as c:
+            tempos = []
+            for _ in range(5):
+                t0 = time.perf_counter()
+                await c.call_tool("consultar_horarios_livres", {"data": "sexta", "servico": "corte"})
+                tempos.append(time.perf_counter() - t0)
+            return max(tempos)
+
+    assert anyio.run(rodar) < 0.5
+
+
+def test_host_publico_liberado(tmp_path):
+    """Atrás de um proxy, o domínio público em FRONTDESK_HOSTS precisa passar pela proteção de Host."""
+    porta = _porta_livre()
+    env = {**os.environ, "PORT": str(porta), "FRONTDESK_DB": str(tmp_path / "h.db"), "FRONTDESK_DEMO": "0",
+           "FRONTDESK_HOSTS": "front-desk.exemplo.com"}
+    proc = subprocess.Popen([sys.executable, "-m", "frontdesk.server"], env=env)
+    base = f"http://127.0.0.1:{porta}"
+    try:
+        for _ in range(100):
+            try:
+                urllib.request.urlopen(base + "/health")
+                break
+            except OSError:
+                time.sleep(0.1)
+        corpo = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}}).encode()
+
+        def chamar(host):
+            req = urllib.request.Request(base + "/mcp", data=corpo, method="POST", headers={
+                "Host": host, "Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
+            try:
+                with urllib.request.urlopen(req) as r:
+                    return r.status
+            except urllib.error.HTTPError as e:
+                return e.code
+
+        assert chamar("front-desk.exemplo.com") == 200
+        assert chamar("outro.exemplo.com") == 421
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+def test_limite_de_falas_por_ip(monkeypatch):
+    from types import SimpleNamespace
+    from frontdesk import server
+    monkeypatch.setattr(server, "LIMITE_POR_IP", 3)
+    server._falas_por_ip.clear()
+    pedido = SimpleNamespace(headers={"x-forwarded-for": "203.0.113.9"}, client=None)
+    assert [server._dentro_do_limite(pedido) for _ in range(4)] == [True, True, True, False]
+    outro = SimpleNamespace(headers={"x-forwarded-for": "198.51.100.7"}, client=None)
+    assert server._dentro_do_limite(outro)
+    server._falas_por_ip.clear()

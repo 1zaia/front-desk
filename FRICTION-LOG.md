@@ -14,8 +14,17 @@
 - **Esperado:** `structuredContent` preenchido ao retornar um `dict`.
 - **Aconteceu:** veio só como texto; `structuredContent` ficou vazio.
 - **Gravidade:** baixa
-- **Solução usada:** ler o texto da resposta no teste; tipar o retorno quando precisarmos de saída estruturada.
-- **Sugestão:** documentar quando o SDK gera saída estruturada.
+- **Solução usada:** anotar o retorno como `dict[str, Any]` em vez de `dict`. Com isso o SDK gera `outputSchema` e preenche `structuredContent`; com `structured_output=True` e `-> dict` puro ele recusa a função ("return type dict is not serializable for structured output").
+- **Sugestão:** documentar a diferença entre `dict` e `dict[str, Any]` no retorno das ferramentas, ou tratar os dois do mesmo jeito.
+
+## Servidor MCP responde 421 "Invalid Host header" atrás de um proxy
+- **Tarefa:** preparar o servidor para rodar atrás do Caddy (HTTPS) num domínio público.
+- **Passos:** subir o servidor em `127.0.0.1:8000` com `streamable_http_app()` e mandar um `initialize` com `Host: <dominio-publico>`.
+- **Esperado:** `200`, como em `localhost`.
+- **Aconteceu:** `421 Invalid Host header`. O SDK liga sozinho a proteção contra DNS rebinding quando o host é `127.0.0.1` e só aceita `localhost`; nada avisa isso na documentação de deploy.
+- **Gravidade:** média (o endpoint publicado não responderia ao Alexa+ nem ao MCP Inspector)
+- **Solução usada:** passar `TransportSecuritySettings` com o domínio público em `allowed_hosts` (variável `FRONTDESK_HOSTS`), mantendo a proteção ligada. Coberto por teste.
+- **Sugestão:** citar a proteção de Host no guia de deploy do SDK e na página de requisitos do endpoint do Alexa+, com um exemplo atrás de proxy.
 
 ## `aws login` não abriu o navegador e expirou em silêncio
 - **Tarefa:** autenticar a AWS CLI no Windows 11 com `aws login` (Agent Toolkit for AWS, passo 3).

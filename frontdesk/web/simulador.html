@@ -210,8 +210,11 @@
   };
 
   // ---------- conversa
-  async function enviar(frase) {
+  let porVoz = false;  // a última fala veio do microfone? então a conversa segue por voz
+
+  async function enviar(frase, origemVoz = false) {
     frase = frase.trim();
+    porVoz = origemVoz;
     if (!frase || ocupado) return;
     ocupado = true;
     cliente.classList.remove("parcial");
@@ -231,7 +234,10 @@
         item("modelo", dados.modelo.startsWith("modo ensaio") ? "Modo ensaio: regras locais, sem Bedrock" : `Amazon Bedrock: ${dados.modelo.replace(/^(us|global)\./, "")}`, dados.ms_modelo, `tools/list em ${dados.ms_tools_list} ms, rodada completa em ${dados.ms_total} ms`),
       ]);
       resposta.textContent = dados.resposta;
+      if (dados.aviso) $("dica").textContent = dados.aviso;
       await falar(dados.resposta);
+      // como o modo de acompanhamento da Alexa: se ela fez uma pergunta, volta a ouvir sozinha
+      if (porVoz && rec && dados.resposta.trim().endsWith("?")) setTimeout(() => { if (!ocupado && !ouvindo) try { rec.start(); } catch (_) {} }, 250);
     } catch (e) {
       resposta.classList.add("erro");
       resposta.textContent = `Não consegui responder: ${e.message}`;
@@ -283,7 +289,7 @@
         (e.results[i].isFinal ? (final += e.results[i][0].transcript) : (parcial += e.results[i][0].transcript));
       }
       if (parcial) { cliente.classList.add("parcial"); cliente.textContent = parcial; }
-      if (final) enviar(final);
+      if (final) enviar(final, true);
     };
   }
   const alternarMic = () => {

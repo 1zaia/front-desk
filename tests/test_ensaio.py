@@ -56,3 +56,17 @@ def test_pergunta_o_que_falta():
     assert "serviço" in r[0]["resposta"]
     assert "dia" in r[1]["resposta"]
     assert r[2]["chamadas"][0]["argumentos"] == {"data": "amanhã", "servico": "barba", "periodo": "tarde"}
+
+
+def test_saudacao_funcionamento_e_fala_do_reconhecimento():
+    r = _conversa("Oi, bom dia")
+    assert r[0]["resposta"].startswith("Olá!") and r[0]["chamadas"] == []
+    r = _conversa("Vocês abrem domingo?")
+    assert r[0]["resposta"].startswith("Não abrimos")  # o relógio do teste está num domingo
+    r = _conversa("Vocês abrem sábado?")
+    assert r[0]["resposta"].startswith("Abrimos sim")
+    # frase real que o reconhecimento de voz do Edge devolveu no teste do Juan
+    r = _conversa("Segunda-feira é meio-dia ou é mais rápido?", "corte", "Ana")
+    assert r[0]["resposta"].startswith("Claro! Para segunda às 12h")
+    assert r[2]["chamadas"][0]["argumentos"] == {"cliente": "Ana", "servico": "corte", "data": "segunda", "horario": "12h"}
+    assert r[2]["chamadas"][0]["ok"]

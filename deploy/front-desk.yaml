@@ -1,0 +1,201 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Front Desk (Amazon Developer Hackathon): servidor MCP, simulador de voz e painel do dono
+  numa instancia EC2 com HTTPS (Caddy + Let's Encrypt em <ip>.sslip.io) e permissao para
+  chamar o Amazon Nova no Bedrock pelo papel da instancia, sem chaves de acesso.
+
+Parameters:
+  Branch:
+    Type: String
+    Default: main
+    Description: Branch do repositorio 1zaia/front-desk que sera publicada.
+  AgentMode:
+    Type: String
+    Default: auto
+    AllowedValues: [auto, bedrock, ensaio]
+    Description: >
+      auto = Bedrock e, se falhar (ex.: sem cota), modo ensaio com aviso na tela;
+      bedrock = so Bedrock; ensaio = sem Bedrock.
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t3.micro, t3.small]
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Front Desk - HTTP e HTTPS publicos (sem SSH; acesso administrativo pelo Session Manager)
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIpv6: "::/0" }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIpv6: "::/0" }
+      Tags:
+        - { Key: Project, Value: front-desk }
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Papel da instancia do Front Desk - chama o Amazon Nova no Bedrock
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: bedrock-nova
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: SomenteAmazonNova
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub arn:${AWS::Partition}:bedrock:*::foundation-model/amazon.nova-*
+                  - !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-*
+                  - !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/global.amazon.nova-*
+      Tags:
+        - { Key: Project, Value: front-desk }
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  PublicIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - { Key: Project, Value: front-desk }
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroupIds: [!GetAtt SecurityGroup.GroupId]
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs: { VolumeSize: 8, VolumeType: gp3, Encrypted: true, DeleteOnTermination: true }
+      Tags:
+        - { Key: Name, Value: front-desk }
+        - { Key: Project, Value: front-desk }
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # Instala e sobe o Front Desk. Log: /var/log/cloud-init-output.log
+          set -euxo pipefail
+          IP="${PublicIp}"
+          DOMINIO="${!IP//./-}.sslip.io"
+
+          dnf install -y python3.11 python3.11-pip git tar
+          id frontdesk || useradd --system --create-home --home-dir /opt/front-desk frontdesk
+          rm -rf /opt/front-desk/app
+          git clone --depth 1 --branch "${Branch}" https://github.com/1zaia/front-desk.git /opt/front-desk/app
+          python3.11 -m venv /opt/front-desk/venv
+          /opt/front-desk/venv/bin/pip install --upgrade pip
+          /opt/front-desk/venv/bin/pip install -r /opt/front-desk/app/requirements.txt
+          chown -R frontdesk:frontdesk /opt/front-desk
+
+          cat > /etc/front-desk.env <<CONFIG
+          FRONTDESK_HOSTS=$DOMINIO
+          FRONTDESK_AGENTE=${AgentMode}
+          FRONTDESK_DB=/opt/front-desk/frontdesk.db
+          AWS_REGION=${AWS::Region}
+          HOST=127.0.0.1
+          PORT=8000
+          CONFIG
+
+          cat > /etc/systemd/system/front-desk.service <<'UNIT'
+          [Unit]
+          Description=Front Desk (servidor MCP, simulador e painel)
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          User=frontdesk
+          WorkingDirectory=/opt/front-desk/app
+          EnvironmentFile=/etc/front-desk.env
+          ExecStart=/opt/front-desk/venv/bin/python -m frontdesk.server
+          Restart=always
+          RestartSec=3
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          # Caddy: HTTPS automatico (Let's Encrypt) na frente do servidor
+          curl -fsSL -o /tmp/caddy.tar.gz https://github.com/caddyserver/caddy/releases/download/v2.8.4/caddy_2.8.4_linux_amd64.tar.gz
+          tar -xzf /tmp/caddy.tar.gz -C /usr/local/bin caddy
+          mkdir -p /etc/caddy
+          cat > /etc/caddy/Caddyfile <<CADDY
+          $DOMINIO {
+            encode gzip
+            reverse_proxy 127.0.0.1:8000
+          }
+          CADDY
+
+          cat > /etc/systemd/system/caddy.service <<'UNIT'
+          [Unit]
+          Description=Caddy (HTTPS do Front Desk)
+          After=network-online.target front-desk.service
+          Wants=network-online.target
+
+          [Service]
+          Environment=HOME=/var/lib/caddy
+          ExecStart=/usr/local/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+          ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          mkdir -p /var/lib/caddy
+
+          # O certificado so sai depois que o IP elastico estiver ligado a esta instancia
+          for i in $(seq 1 60); do
+            [ "$(curl -fsS https://checkip.amazonaws.com || true)" = "$IP" ] && break
+            sleep 5
+          done
+
+          systemctl daemon-reload
+          systemctl enable --now front-desk.service
+          systemctl enable --now caddy.service
+
+  IpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt PublicIp.AllocationId
+      InstanceId: !Ref Instance
+
+Outputs:
+  DemoUrl:
+    Description: Simulador e painel lado a lado (abrir no Chrome ou no Edge)
+    Value: !Sub
+      - https://${Dominio}.sslip.io/demo
+      - Dominio: !Join ["-", !Split [".", !Ref PublicIp]]
+  McpUrl:
+    Description: Endpoint MCP (Streamable HTTP) para o MCP Inspector ou outro cliente
+    Value: !Sub
+      - https://${Dominio}.sslip.io/mcp
+      - Dominio: !Join ["-", !Split [".", !Ref PublicIp]]
+  PainelUrl:
+    Description: Painel do dono
+    Value: !Sub
+      - https://${Dominio}.sslip.io/painel
+      - Dominio: !Join ["-", !Split [".", !Ref PublicIp]]
+  InstanceId:
+    Description: Instancia (acesso pelo Session Manager, sem SSH)
+    Value: !Ref Instance
