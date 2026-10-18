@@ -22,7 +22,8 @@ def _porta_livre() -> int:
 @pytest.fixture
 def servidor(tmp_path):
     porta = _porta_livre()
-    env = {**os.environ, "PORT": str(porta), "FRONTDESK_DB": str(tmp_path / "teste.db")}
+    env = {**os.environ, "PORT": str(porta), "FRONTDESK_DB": str(tmp_path / "teste.db"),
+           "FRONTDESK_AGORA": "2026-10-19T08:00", "FRONTDESK_DEMO": "0"}
     proc = subprocess.Popen([sys.executable, "-m", "frontdesk.server"], env=env)
     base = f"http://127.0.0.1:{porta}"
     for _ in range(100):
@@ -54,15 +55,50 @@ def test_initialize_2025_11_25(servidor):
     assert resposta["result"]["serverInfo"]["name"] == "front-desk"
 
 
-def test_listar_servicos(servidor):
+def _dados(resultado) -> dict:
+    texto = "".join(c.text for c in resultado.content if getattr(c, "type", "") == "text")
+    return json.loads(texto)
+
+
+def test_ferramentas_listadas(servidor):
     async def rodar():
         async with Client(servidor + "/mcp", mode="legacy") as cliente:
-            ferramentas = await cliente.list_tools()
-            resultado = await cliente.call_tool("listar_servicos", {})
-            return ferramentas, resultado
+            return await cliente.list_tools()
 
-    ferramentas, resultado = anyio.run(rodar)
-    assert "listar_servicos" in [t.name for t in ferramentas.tools]
-    assert not resultado.is_error
-    texto = " ".join(c.text for c in resultado.content if getattr(c, "type", "") == "text")
-    assert "Corte" in texto
+    nomes = {t.name for t in anyio.run(rodar).tools}
+    assert nomes == {"listar_servicos", "consultar_horarios_livres", "agendar", "cancelar", "reagendar", "resumo_do_dia"}
+
+
+def test_conversa_completa(servidor):
+    """O roteiro da demo: consultar, agendar, ver o resumo, reagendar e cancelar."""
+    async def rodar():
+        r = {}
+        async with Client(servidor + "/mcp", mode="legacy") as c:
+            r["servicos"] = _dados(await c.call_tool("listar_servicos", {}))
+            r["livres"] = _dados(await c.call_tool("consultar_horarios_livres", {"data": "sexta", "servico": "corte", "periodo": "manhã"}))
+            r["agendar"] = _dados(await c.call_tool("agendar", {"cliente": "joão", "servico": "corte", "data": "sexta", "horario": "9h"}))
+            r["ocupado"] = _dados(await c.call_tool("agendar", {"cliente": "Ana", "servico": "corte", "data": "sexta", "horario": "9h", "profissional": r["agendar"]["agendamento"]["profissional"]}))
+            r["resumo"] = _dados(await c.call_tool("resumo_do_dia", {"data": "sexta"}))
+            r["reagendar"] = _dados(await c.call_tool("reagendar", {"cliente": "joão", "nova_data": "sexta", "novo_horario": "16h"}))
+            r["cancelar"] = _dados(await c.call_tool("cancelar", {"cliente": "joao"}))
+            r["domingo"] = _dados(await c.call_tool("agendar", {"cliente": "Ana", "servico": "barba", "data": "domingo", "horario": "10h"}))
+        return r
+
+    r = anyio.run(rodar)
+    assert "Corte" in r["servicos"]["fala"]
+    assert r["livres"]["ok"] and "sexta, 23/10" in r["livres"]["fala"] and "9h" in r["livres"]["fala"]
+    assert r["agendar"]["ok"] and r["agendar"]["fala"].startswith("Pronto, João! Marquei corte para sexta")
+    assert not r["ocupado"]["ok"] and "ocupado" in r["ocupado"]["fala"]
+    assert r["resumo"]["total_clientes"] == 1
+    assert r["reagendar"]["ok"] and r["reagendar"]["agendamento"]["inicio"] == "2026-10-23T16:00"
+    assert r["cancelar"]["ok"] and r["cancelar"]["agendamento"]["status"] == "cancelado"
+    assert not r["domingo"]["ok"] and "Não abrimos" in r["domingo"]["fala"]
+    for etapa, dados in r.items():
+        print(f"{etapa:>9}: {dados['fala']}")
+
+
+def test_api_agenda(servidor):
+    with urllib.request.urlopen(servidor + "/api/agenda?data=2026-10-23") as resp:
+        dados = json.loads(resp.read())
+    assert dados["negocio"] == "Barbearia Navalha"
+    assert dados["data"] == "2026-10-23"
