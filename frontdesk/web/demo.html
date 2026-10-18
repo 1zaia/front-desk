@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Front Desk · Demo</title>
+<style>
+  :root { --parede: #e3e6e4; --fundo: #f6f7f5; --linha: #c9cfcc; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--parede); display: grid; grid-template-columns: minmax(0, 45fr) minmax(0, 55fr); }
+  iframe { width: 100%; height: 100%; border: 0; display: block; }
+  iframe + iframe { border-left: 1px solid var(--linha); background: var(--fundo); }
+  @media (max-width: 900px) {
+    body { grid-template-columns: 1fr; grid-auto-rows: 100vh; height: auto; }
+    iframe + iframe { border-left: 0; border-top: 1px solid var(--linha); }
+  }
+</style>
+</head>
+<body>
+  <iframe src="/simulador" title="Simulador de voz" allow="microphone; autoplay"></iframe>
+  <iframe src="/painel" title="Painel do dono"></iframe>
+</body>
+</html>

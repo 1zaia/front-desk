@@ -5,6 +5,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 import anyio
@@ -102,3 +103,27 @@ def test_api_agenda(servidor):
         dados = json.loads(resp.read())
     assert dados["negocio"] == "Barbearia Navalha"
     assert dados["data"] == "2026-10-23"
+
+
+def test_api_semana(servidor):
+    with urllib.request.urlopen(servidor + "/api/semana?dias=7") as resp:
+        dados = json.loads(resp.read())
+    assert dados["profissionais"] == ["Rafael", "Bruno"]
+    assert len(dados["dias"]) == 7
+    segunda, domingo = dados["dias"][0], dados["dias"][6]
+    assert segunda["data"] == "2026-10-19" and segunda["aberto"] and segunda["abre"] == "09:00"
+    assert domingo["dia"] == "domingo" and not domingo["aberto"]
+
+
+def test_paginas(servidor):
+    for caminho in ("/simulador", "/painel", "/demo"):
+        with urllib.request.urlopen(servidor + caminho) as resp:
+            assert resp.status == 200 and "text/html" in resp.headers["Content-Type"]
+
+
+def test_conversa_sem_texto(servidor):
+    req = urllib.request.Request(servidor + "/api/conversa", data=b'{"texto": ""}', method="POST",
+                                 headers={"Content-Type": "application/json"})
+    with pytest.raises(urllib.error.HTTPError) as erro:
+        urllib.request.urlopen(req)
+    assert erro.value.code == 400

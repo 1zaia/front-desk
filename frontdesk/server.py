@@ -6,17 +6,19 @@ e os dados estruturados para quem quiser mostrar na tela.
 """
 from __future__ import annotations
 
+import logging
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse, RedirectResponse
 
 from mcp.server import MCPServer
 
-from frontdesk import agenda, db
+from frontdesk import agenda, agente, db, ensaio
 from frontdesk.agenda import ErroAgenda
 
 mcp = MCPServer(
@@ -226,6 +228,88 @@ async def api_agenda(request: Request) -> JSONResponse:
         itens = agenda.agendamentos_do_dia(conn, d)
         negocio = db.nome_do_negocio(conn)
     return JSONResponse({"negocio": negocio, "data": d.isoformat(), "agendamentos": itens})
+
+
+@mcp.custom_route("/api/semana", methods=["GET"])
+async def api_semana(request: Request) -> JSONResponse:
+    """Agenda dos próximos dias para o painel ao vivo. Parâmetros opcionais: ?inicio=hoje&dias=7."""
+    momento = agenda.agora()
+    try:
+        inicio = agenda.interpretar_data(request.query_params.get("inicio", "hoje"), momento.date())
+        dias = max(1, min(14, int(request.query_params.get("dias", "7"))))
+    except (ErroAgenda, ValueError) as e:
+        return JSONResponse({"erro": str(e)}, status_code=400)
+    with _conn() as conn:
+        negocio = db.nome_do_negocio(conn)
+        profissionais = [p.nome for p in agenda._profissionais(conn)]
+        lista = []
+        for i in range(dias):
+            d = inicio + timedelta(days=i)
+            janela = agenda._funcionamento(conn, d)
+            lista.append({
+                "data": d.isoformat(),
+                "dia": agenda.NOMES_DIAS[d.weekday()],
+                "aberto": janela is not None,
+                "abre": janela[0].strftime("%H:%M") if janela else None,
+                "fecha": janela[1].strftime("%H:%M") if janela else None,
+                "agendamentos": agenda.agendamentos_do_dia(conn, d),
+            })
+    return JSONResponse({
+        "negocio": negocio,
+        "agora": momento.isoformat(timespec="minutes"),
+        "profissionais": profissionais,
+        "dias": lista,
+    })
+
+
+WEB = Path(__file__).resolve().parent / "web"
+log = logging.getLogger("frontdesk")
+
+
+@mcp.custom_route("/api/conversa", methods=["POST"])
+async def api_conversa(request: Request) -> JSONResponse:
+    """Uma fala do cliente para o agente no Bedrock. Corpo: {"texto": "...", "sessao": "opcional"}."""
+    try:
+        corpo = await request.json()
+    except ValueError:
+        return JSONResponse({"erro": "Corpo JSON inválido."}, status_code=400)
+    texto = str(corpo.get("texto", "")).strip()
+    if not texto:
+        return JSONResponse({"erro": "Mande o campo 'texto' com a fala do cliente."}, status_code=400)
+    if len(texto) > 500:
+        return JSONResponse({"erro": "Fala longa demais."}, status_code=400)
+    with _conn() as conn:
+        negocio = db.nome_do_negocio(conn)
+    try:
+        modo = ensaio if os.environ.get("FRONTDESK_AGENTE", "").lower() == "ensaio" else agente
+        resultado = await modo.responder(texto, corpo.get("sessao") or None, negocio=negocio)
+    except agente.ErroAgente as e:  # credencial expirada, modelo sem acesso, rede: mostra na tela em vez de travar
+        log.warning("Falha no agente: %s", e, exc_info=e.__cause__)
+        return JSONResponse({"erro": str(e)}, status_code=502)
+    return JSONResponse(resultado)
+
+
+@mcp.custom_route("/api/conversa/{sessao}", methods=["DELETE"])
+async def api_encerrar(request: Request) -> JSONResponse:
+    agente.encerrar_sessao(request.path_params["sessao"])
+    ensaio.encerrar_sessao(request.path_params["sessao"])
+    return JSONResponse({"ok": True})
+
+
+def _pagina(nome: str):
+    async def rota(_: Request) -> FileResponse:
+        return FileResponse(WEB / nome, media_type="text/html; charset=utf-8")
+    return rota
+
+
+mcp.custom_route("/simulador", methods=["GET"])(_pagina("simulador.html"))
+mcp.custom_route("/painel", methods=["GET"])(_pagina("painel.html"))
+mcp.custom_route("/demo", methods=["GET"])(_pagina("demo.html"))
+
+
+@mcp.custom_route("/", methods=["GET"])
+async def inicio(_: Request) -> RedirectResponse:
+    return RedirectResponse("/demo")
 
 
 def app():
