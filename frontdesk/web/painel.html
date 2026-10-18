@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Front Desk · Painel do dono</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --fundo: #f6f7f5;
+    --papel: #ffffff;
+    --tinta: #1b2422;
+    --tinta-suave: #5d6a67;
+    --linha: #dde2df;
+    --linha-forte: #c3cbc7;
+    --vermelho: #c8372d;
+    --azul: #1f4e79;
+    --novo: #35c6d8;
+    --hora-px: 64px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--fundo); color: var(--tinta);
+    font-family: "Archivo", system-ui, sans-serif;
+    padding: 22px 16px 32px;
+    min-height: 100vh;
+  }
+  .painel { max-width: 1000px; margin: 0 auto; display: grid; gap: 18px; }
+
+  header { display: flex; justify-content: space-between; align-items: end; gap: 16px; flex-wrap: wrap; }
+  h1 {
+    margin: 0; font-size: clamp(26px, 4vw, 38px); line-height: 1;
+    font-variation-settings: "wdth" 125; font-weight: 800; letter-spacing: -.01em;
+  }
+  .sub { margin: 6px 0 0; color: var(--tinta-suave); font-size: 15px; }
+  .ao-vivo { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--tinta-suave); }
+  .ao-vivo::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: #2f8f5b; }
+  .ao-vivo.offline::before { background: var(--vermelho); }
+
+  /* dias */
+  .dias { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+  .dia {
+    font: inherit; text-align: left; cursor: pointer;
+    background: var(--papel); border: 1px solid var(--linha); border-radius: 10px;
+    padding: 8px 10px; color: var(--tinta); display: grid; gap: 2px;
+  }
+  .dia .nome { font-size: 13px; color: var(--tinta-suave); text-transform: capitalize; }
+  .dia .num { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .dia .qtd { font-size: 12px; color: var(--tinta-suave); }
+  .dia[aria-pressed="true"] { border-color: var(--tinta); box-shadow: inset 0 0 0 1px var(--tinta); }
+  .dia.fechado { opacity: .5; }
+  .dia.pulso { animation: pulso 1.4s ease-out; }
+  @keyframes pulso { 0% { background: #dff6f8; } }
+
+  /* resumo */
+  .resumo { display: flex; gap: 28px; flex-wrap: wrap; }
+  .resumo div { display: grid; }
+  .resumo b { font-size: 24px; font-variant-numeric: tabular-nums; font-variation-settings: "wdth" 110; }
+  .resumo span { font-size: 13px; color: var(--tinta-suave); }
+
+  /* grade */
+  .grade { background: var(--papel); border: 1px solid var(--linha); border-radius: 14px; overflow: hidden; }
+  .cabecalho, .corpo { display: grid; grid-template-columns: 56px repeat(var(--colunas), minmax(0, 1fr)); }
+  .cabecalho { border-bottom: 1px solid var(--linha); }
+  .cabecalho div { padding: 10px 12px; font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .cabecalho div i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .corpo { position: relative; max-height: 78vh; overflow-y: auto; }
+  .horas div { height: var(--hora-px); font-size: 12px; color: var(--tinta-suave); padding: 2px 8px; text-align: right; font-variant-numeric: tabular-nums; border-top: 1px solid var(--linha); }
+  .coluna-prof { position: relative; border-left: 1px solid var(--linha); background-image: repeating-linear-gradient(to bottom, var(--linha) 0 1px, transparent 1px var(--hora-px)); }
+  .meia { position: absolute; left: 0; right: 0; border-top: 1px dashed #eceeed; }
+
+  .ag {
+    position: absolute; left: 6px; right: 6px; border-radius: 8px; padding: 6px 9px;
+    color: #fff; overflow: hidden; display: grid; align-content: start; gap: 1px;
+    font-size: 13px; line-height: 1.2;
+  }
+  .ag strong { font-size: 14px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ag span { opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ag.curto { display: flex; align-items: center; gap: 8px; padding-top: 0; padding-bottom: 0; }
+  .ag.curto strong { flex: 0 1 auto; }
+  .ag.curto span { flex: 1 1 auto; }
+  .ag.cancelado {
+    background: repeating-linear-gradient(135deg, #eef0ef 0 6px, #e2e6e4 6px 12px) !important;
+    color: var(--tinta-suave); text-decoration: line-through;
+  }
+  .ag.novo { animation: chegou 2.4s ease-out; box-shadow: 0 0 0 3px var(--novo); }
+  @keyframes chegou {
+    0% { transform: scale(1.06); box-shadow: 0 0 0 8px var(--novo); }
+    60% { transform: scale(1); }
+  }
+  .agora { position: absolute; left: 0; right: 0; border-top: 2px solid var(--vermelho); z-index: 2; pointer-events: none; }
+
+  .vazio-dia { padding: 28px; color: var(--tinta-suave); }
+  .aviso { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--tinta); color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 15px; opacity: 0; transition: opacity .3s; pointer-events: none; max-width: calc(100% - 32px); }
+  .aviso.visivel { opacity: 1; }
+  :focus-visible { outline: 3px solid var(--novo); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+  @media (max-width: 620px) {
+    .dias { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .resumo { gap: 18px; }
+  }
+</style>
+</head>
+<body>
+<main class="painel">
+  <header>
+    <div>
+      <h1 id="negocio">Barbearia Navalha</h1>
+      <p class="sub">Agenda do dia, atualizada sozinha a cada marcação</p>
+    </div>
+    <span class="ao-vivo" id="status">Ao vivo</span>
+  </header>
+
+  <nav class="dias" id="dias" aria-label="Dias da semana"></nav>
+
+  <section class="resumo" id="resumo" aria-live="polite"></section>
+
+  <section class="grade" id="grade" aria-label="Agenda por profissional"></section>
+</main>
+<div class="aviso" id="aviso" role="status"></div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const CORES = ["var(--vermelho)", "var(--azul)", "#2f6f5e", "#7a4b94"];
+  const INTERVALO = 1500;
+  let dados = null, diaSel = null, conhecidos = null, novos = new Set(), primeiro = true;
+
+  const min = (hhmm) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + m; };
+  const hora = (iso) => iso.slice(11, 16);
+  const falarHora = (hhmm) => { const [h, m] = hhmm.split(":"); return m === "00" ? `${+h}h` : `${+h}h${m}`; };
+  const reais = (c) => (c / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
+
+  function aviso(msg) {
+    const a = $("aviso"); a.textContent = msg; a.classList.add("visivel");
+    clearTimeout(aviso.t); aviso.t = setTimeout(() => a.classList.remove("visivel"), 4000);
+  }
+
+  function assinatura(a) { return `${a.inicio}|${a.status}|${a.profissional}`; }
+
+  function detectarMudancas() {
+    const atual = new Map();
+    for (const d of dados.dias) for (const a of d.agendamentos) atual.set(a.id, { a, dia: d.data });
+    if (conhecidos) {
+      let alvo = null;
+      for (const [id, { a, dia }] of atual) {
+        const antes = conhecidos.get(id);
+        if (!antes) { novos.add(id); alvo = { dia, msg: `Novo: ${a.cliente.split(" ")[0]}, ${a.servico.toLowerCase()} às ${falarHora(hora(a.inicio))}` }; }
+        else if (antes !== assinatura(a)) {
+          novos.add(id);
+          alvo = { dia, msg: a.status === "cancelado" ? `Cancelado: ${a.cliente.split(" ")[0]} às ${falarHora(hora(a.inicio))}` : `Remarcado: ${a.cliente.split(" ")[0]} para ${falarHora(hora(a.inicio))}` };
+        }
+      }
+      if (alvo) {
+        diaSel = alvo.dia;
+        aviso(alvo.msg);
+        setTimeout(() => novos.clear(), 2600);
+      }
+    }
+    conhecidos = new Map([...atual].map(([id, { a }]) => [id, assinatura(a)]));
+  }
+
+  function desenharDias() {
+    const nav = $("dias"); nav.innerHTML = "";
+    for (const d of dados.dias) {
+      const b = document.createElement("button");
+      const ativos = d.agendamentos.filter(a => a.status === "confirmado").length;
+      b.type = "button"; b.className = "dia" + (d.aberto ? "" : " fechado");
+      if (d.agendamentos.some(a => novos.has(a.id))) b.classList.add("pulso");
+      b.setAttribute("aria-pressed", String(d.data === diaSel));
+      const [, m, dd] = d.data.split("-");
+      b.innerHTML = `<span class="nome"></span><span class="num">${dd}/${m}</span><span class="qtd"></span>`;
+      b.querySelector(".nome").textContent = d.data === dados.agora.slice(0, 10) ? "hoje" : d.dia;
+      b.querySelector(".qtd").textContent = d.aberto ? (ativos === 1 ? "1 cliente" : `${ativos} clientes`) : "fechado";
+      b.addEventListener("click", () => { diaSel = d.data; desenhar(); });
+      nav.append(b);
+    }
+  }
+
+  function desenharResumo(d) {
+    const ativos = d.agendamentos.filter(a => a.status === "confirmado");
+    const receita = ativos.reduce((s, a) => s + a.preco_centavos, 0);
+    const prox = ativos.find(a => a.inicio >= dados.agora);
+    const r = $("resumo");
+    r.innerHTML = "";
+    const bloco = (valor, rotulo) => { const div = document.createElement("div"); div.innerHTML = "<b></b><span></span>"; div.querySelector("b").textContent = valor; div.querySelector("span").textContent = rotulo; r.append(div); };
+    if (!d.aberto) { bloco("Fechado", "a barbearia não abre neste dia"); return; }
+    bloco(String(ativos.length), ativos.length === 1 ? "cliente marcado" : "clientes marcados");
+    bloco(reais(receita), "receita prevista");
+    bloco(prox ? `${falarHora(hora(prox.inicio))} ${prox.cliente.split(" ")[0]}` : "Nenhum", "próximo atendimento");
+  }
+
+  function desenharGrade(d) {
+    const g = $("grade");
+    g.style.setProperty("--colunas", dados.profissionais.length);
+    if (!d.aberto) { g.innerHTML = '<p class="vazio-dia">Sem expediente neste dia.</p>'; return; }
+    const abre = Math.floor(min(d.abre) / 60) * 60, fecha = Math.ceil(min(d.fecha) / 60) * 60;
+    // cabe o expediente inteiro na tela, sem deixar a hora menor que 60 px
+    const disponivel = window.innerHeight - g.getBoundingClientRect().top - 60;
+    const px = Math.max(60, Math.min(110, disponivel / ((fecha - abre) / 60)));
+    g.style.setProperty("--hora-px", `${px}px`);
+    const y = (m) => ((m - abre) / 60) * px;
+    const altura = y(fecha);
+
+    const cab = document.createElement("div"); cab.className = "cabecalho";
+    cab.innerHTML = "<div></div>";
+    dados.profissionais.forEach((p, i) => { const c = document.createElement("div"); c.innerHTML = `<i style="background:${CORES[i % CORES.length]}"></i><span></span>`; c.querySelector("span").textContent = p; cab.append(c); });
+
+    const corpo = document.createElement("div"); corpo.className = "corpo";
+    const horas = document.createElement("div"); horas.className = "horas";
+    for (let m = abre; m < fecha; m += 60) { const h = document.createElement("div"); h.textContent = `${m / 60}h`; horas.append(h); }
+    corpo.append(horas);
+
+    dados.profissionais.forEach((p, i) => {
+      const col = document.createElement("div"); col.className = "coluna-prof"; col.style.height = `${altura}px`;
+      for (let m = abre + 30; m < fecha; m += 60) { const l = document.createElement("div"); l.className = "meia"; l.style.top = `${y(m)}px`; col.append(l); }
+      d.agendamentos.filter(a => a.profissional === p)
+        .sort((a, b) => (a.status === "cancelado") - (b.status === "cancelado"))
+        .reverse()
+        .forEach(a => {
+          const el = document.createElement("div");
+          el.className = "ag" + (a.status === "cancelado" ? " cancelado" : "") + (novos.has(a.id) ? " novo" : "");
+          const ini = min(hora(a.inicio)), fim = min(hora(a.fim));
+          const alt = Math.max(y(fim) - y(ini) - 4, 26);
+          el.style.top = `${y(ini) + 2}px`; el.style.height = `${alt}px`;
+          if (alt < 44) el.classList.add("curto");
+          el.style.background = CORES[i % CORES.length];
+          el.innerHTML = "<strong></strong><span></span>";
+          el.querySelector("strong").textContent = a.cliente;
+          el.querySelector("span").textContent = `${falarHora(hora(a.inicio))} ${a.servico}`;
+          el.title = `${a.cliente}, ${a.servico}, ${hora(a.inicio)} às ${hora(a.fim)}`;
+          col.append(el);
+        });
+      corpo.append(col);
+    });
+
+    if (d.data === dados.agora.slice(0, 10)) {
+      const agoraMin = min(dados.agora.slice(11, 16));
+      if (agoraMin >= abre && agoraMin <= fecha) {
+        const linha = document.createElement("div"); linha.className = "agora"; linha.style.top = `${y(agoraMin)}px`;
+        linha.style.left = "56px"; corpo.append(linha);
+      }
+    }
+    const rolagem = g.querySelector(".corpo")?.scrollTop ?? 0;
+    g.replaceChildren(cab, corpo);
+    corpo.scrollTop = rolagem;
+    const destaque = corpo.querySelector(".ag.novo");
+    if (destaque) destaque.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
+  function desenhar() {
+    if (!dados) return;
+    if (!dados.dias.some(d => d.data === diaSel)) diaSel = dados.dias[0].data;
+    const d = dados.dias.find(x => x.data === diaSel);
+    desenharDias(); desenharResumo(d); desenharGrade(d);
+  }
+
+  let ultimo = "";
+  async function atualizar() {
+    try {
+      const r = await fetch("/api/semana?dias=7", { cache: "no-store" });
+      if (!r.ok) throw new Error(r.status);
+      const texto = await r.text();
+      $("status").classList.remove("offline"); $("status").textContent = "Ao vivo";
+      if (texto === ultimo) return;
+      ultimo = texto;
+      dados = JSON.parse(texto);
+      $("negocio").textContent = dados.negocio;
+      if (primeiro) { diaSel = new URLSearchParams(location.search).get("data") || dados.dias[0].data; primeiro = false; }
+      detectarMudancas();
+      desenhar();
+    } catch (_) {
+      $("status").classList.add("offline"); $("status").textContent = "Sem conexão com o servidor";
+    } finally {
+      setTimeout(atualizar, INTERVALO);
+    }
+  }
+  atualizar();
+  let redimensionar;
+  window.addEventListener("resize", () => { clearTimeout(redimensionar); redimensionar = setTimeout(desenhar, 150); });
+})();
+</script>
+</body>
+</html>
