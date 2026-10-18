@@ -4,6 +4,8 @@ Recepcionista por voz para pequenos negócios, construída como servidor MCP par
 
 O cliente fala "quero cortar o cabelo sexta de manhã", o servidor confere a agenda, marca o horário e o painel do dono atualiza na hora.
 
+**Demo ao vivo:** https://18-190-98-99.sslip.io/demo (Chrome ou Edge) · **Endpoint MCP:** `https://18-190-98-99.sslip.io/mcp` (Streamable HTTP)
+
 ## Ferramentas MCP
 | Ferramenta | O que faz | Exemplo de fala |
 |---|---|---|
@@ -42,7 +44,7 @@ O agente usa as credenciais padrão da AWS. Quem entra com `aws login` precisa d
 - [x] Simulador de voz com agente no Amazon Bedrock
 - [x] Painel do dono ao vivo
 - [x] Template de deploy na AWS (EC2 + HTTPS + papel IAM para o Nova)
-- [ ] Deploy publicado
+- [x] Deploy publicado na AWS (EC2 + HTTPS)
 
 ## Rodar localmente
 Requer Python 3.10 ou superior.
