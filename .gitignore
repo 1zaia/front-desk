@@ -5,3 +5,6 @@ __pycache__/
 .env
 .pytest_cache/
 .aws-setup-log.txt
+
+# result of deploy\update.cmd
+deploy/update-result.txt

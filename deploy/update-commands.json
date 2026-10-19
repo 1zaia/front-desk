@@ -1,0 +1,18 @@
+{
+  "commands": [
+    "set -euxo pipefail",
+    "cd /opt/front-desk/app",
+    "git -c safe.directory=/opt/front-desk/app fetch --depth 1 origin main",
+    "git -c safe.directory=/opt/front-desk/app reset --hard origin/main",
+    "/opt/front-desk/venv/bin/pip install -q -r requirements.txt",
+    "sed -i 's/^FRONTDESK_AGENTE=ensaio$/FRONTDESK_AGENT=rehearsal/; s/^FRONTDESK_AGENTE=/FRONTDESK_AGENT=/' /etc/front-desk.env",
+    "rm -f /opt/front-desk/frontdesk.db",
+    "chown -R frontdesk:frontdesk /opt/front-desk",
+    "systemctl restart front-desk",
+    "sleep 4",
+    "curl -fsS http://127.0.0.1:8000/health",
+    "cat /etc/front-desk.env | grep FRONTDESK_AGENT",
+    "git -c safe.directory=/opt/front-desk/app log -1 --oneline"
+  ],
+  "executionTimeout": ["600"]
+}

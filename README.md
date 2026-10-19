@@ -1,53 +1,65 @@
 # Front Desk
 
-Recepcionista por voz para pequenos negócios, construída como servidor MCP para a trilha **Alexa+** do *Build, Ship, Shape: Amazon Developer Hackathon*.
+A voice receptionist for small businesses, built as an MCP server for the **Alexa+** track of *Build, Ship, Shape: Amazon Developer Hackathon*.
 
-O cliente fala "quero cortar o cabelo sexta de manhã", o servidor confere a agenda, marca o horário e o painel do dono atualiza na hora.
+A customer says "I need a haircut Friday morning", the server checks the schedule, books the slot, and the owner's dashboard updates on the spot.
 
-**Demo ao vivo:** https://18-190-98-99.sslip.io/demo (Chrome ou Edge) · **Endpoint MCP:** `https://18-190-98-99.sslip.io/mcp` (Streamable HTTP)
+**Live demo:** https://18-190-98-99.sslip.io/demo (Chrome or Edge) · **MCP endpoint:** `https://18-190-98-99.sslip.io/mcp` (Streamable HTTP)
 
-## Ferramentas MCP
-| Ferramenta | O que faz | Exemplo de fala |
+## MCP tools
+| Tool | What it does | Example request |
 |---|---|---|
-| `listar_servicos` | Serviços, duração e preço | "Quanto custa o corte?" |
-| `consultar_horarios_livres` | Horários livres por dia, período e profissional | "Tem horário sexta de manhã?" |
-| `agendar` | Marca o horário, checando funcionamento e conflitos | "Marca um corte sexta às 9h para o João" |
-| `cancelar` | Cancela o próximo horário do cliente | "Cancela o meu horário" |
-| `reagendar` | Muda dia ou hora, mantendo o profissional quando possível | "Passa para as 16h" |
-| `resumo_do_dia` | Resumo para o dono: clientes, receita prevista, próximo atendimento | "Como está minha agenda hoje?" |
+| `list_services` | Services, duration and price | "How much is a haircut?" |
+| `check_availability` | Open slots by day, period and barber | "Anything open Friday morning?" |
+| `book_appointment` | Books the slot, checking opening hours and conflicts | "Book a haircut Friday at 9 for John" |
+| `cancel_appointment` | Cancels the customer's next appointment | "Cancel my appointment" |
+| `reschedule_appointment` | Moves it to another day or time, keeping the same barber when possible | "Can you move it to 4 PM?" |
+| `daily_summary` | Owner's summary: customers, expected revenue, next appointment | "How's my day looking?" |
 
-Toda resposta traz um campo `fala`, com a frase curta que o assistente de voz deve dizer, e os dados estruturados.
-O servidor entende datas como "hoje", "amanhã", "sexta" e "23/10", e horários como "9h", "9h30" e "14:00".
+Every result has a `speech` field with the short sentence the voice assistant should say, plus structured data (`structuredContent` with an `outputSchema`). Tools are annotated (`readOnlyHint`, `destructiveHint`, `title`) so Alexa+ knows which ones change data.
+The server understands dates like "today", "tomorrow", "Friday", "next Monday", "October 23" and "10/23", and times like "9", "9 AM", "9:30 p.m.", "noon" and "half past 9".
 
-Também há `GET /api/agenda?data=AAAA-MM-DD`, com a agenda do dia em JSON, e `GET /api/semana`, com os próximos 7 dias para o painel do dono.
+There is also `GET /api/schedule?date=YYYY-MM-DD`, with one day of appointments as JSON, and `GET /api/week`, with the next 7 days for the owner's dashboard.
 
-## Simulador de voz e painel do dono
-As ferramentas de desenvolvedor da Alexa+ estão em preview fechado, então a demo usa um simulador no navegador:
+## Voice simulator and owner dashboard
+The Alexa+ developer tools are in closed preview, so the demo uses a simulated Alexa+ experience in the browser (accepted by the hackathon rules):
 
-- `/simulador`: tela de assistente de voz. O cliente fala (Web Speech API, pt-BR) ou digita; a fala vai para `POST /api/conversa`.
-- `POST /api/conversa`: o agente no **Amazon Bedrock** (Amazon Nova, Converse API com tool use) lê as ferramentas do servidor MCP (`tools/list`), chama as que precisar (`tools/call`) e devolve a resposta falada e a lista de chamadas com argumentos e latência.
-- `/painel`: agenda da semana por profissional, atualizando sozinha a cada 1,5 s; marcações novas, remarcações e cancelamentos piscam na tela.
-- `/demo`: simulador e painel lado a lado, o enquadramento do vídeo.
+- `/simulator`: a voice assistant screen. The customer speaks (Web Speech API, en-US) or types; each utterance goes to `POST /api/conversation`.
+  - **Hands-free:** tap the mic and speak; the turn ends after a short pause, not at the first breath. If the browser stops the recognizer on its own, it restarts and keeps what was already heard.
+  - **Push-to-talk:** hold <kbd>Space</kbd> while talking and release to send.
+  - **Follow-up mode:** when the assistant asks a question, it listens again on its own, like Alexa.
+  - A level meter shows the mic is really hearing you, and the assistant never listens while it is speaking.
+- `POST /api/conversation`: the agent on **Amazon Bedrock** (Amazon Nova, Converse API with tool use) reads the MCP server's tools (`tools/list`), calls the ones it needs (`tools/call`) and returns the spoken reply plus the list of calls with arguments and latency.
+- `/dashboard`: the week's schedule by barber, refreshing every 1.5 s; new bookings, reschedules and cancellations flash on screen.
+- `/demo`: simulator and dashboard side by side, the framing used in the video.
 
-O agente usa as credenciais padrão da AWS. Quem entra com `aws login` precisa do extra `crt` do botocore (já está no `requirements.txt` como `boto3[crt]`). Variáveis:
-- `AWS_PROFILE` e `AWS_REGION` (padrão `us-east-2`).
-- `FRONTDESK_MODELO`: modelos ou perfis de inferência do Bedrock, separados por vírgula, em ordem de preferência (padrão: Nova Lite, Nova Micro e Nova 2 Lite). Se um estiver sem cota ou sem acesso, o agente passa para o próximo.
-- `FRONTDESK_AGENTE`: `bedrock` (padrão), `ensaio` (agente simples de regras, sem o modelo, para testar a demo; usa as mesmas ferramentas MCP e a tela mostra "modo ensaio") ou `auto` (Bedrock e, se ele falhar, modo ensaio com aviso na tela; é o que o deploy usa).
-- `FRONTDESK_HOSTS`: domínios públicos aceitos pelo servidor MCP quando ele roda atrás de um proxy (ex.: `front-desk.exemplo.com`). Sem isso, o SDK só aceita `localhost` e responde 421.
-- `FRONTDESK_LIMITE_POR_IP` e `FRONTDESK_LIMITE_DIARIO`: limite de falas por IP a cada 10 minutos (padrão 40) e por dia (padrão 600), para proteger os créditos da AWS.
-- `FRONTDESK_MCP_URL`: servidor MCP que o agente usa (padrão: o próprio servidor).
+The agent uses the default AWS credentials. If you sign in with `aws login`, botocore needs its `crt` extra (already in `requirements.txt` as `boto3[crt]`). Settings:
+- `AWS_PROFILE` and `AWS_REGION` (default `us-east-2`).
+- `FRONTDESK_MODEL`: Bedrock models or inference profiles, comma-separated, in order of preference (default: Nova Lite, Nova Micro and Nova 2 Lite). If one has no quota or no access, the agent moves on to the next.
+- `FRONTDESK_AGENT`: `bedrock` (default), `rehearsal` (a simple rule-based agent without the model, to test the demo; it uses the same MCP tools and the screen says "rehearsal mode") or `auto` (Bedrock, and if it fails, rehearsal mode with a notice on screen; this is what the deployment uses).
+- `FRONTDESK_HOSTS`: public domains the MCP server accepts when it runs behind a proxy (e.g. `front-desk.example.com`). Without it, the SDK only accepts `localhost` and answers 421.
+- `FRONTDESK_RATE_PER_IP` and `FRONTDESK_DAILY_LIMIT`: utterances per IP every 10 minutes (default 40) and per day (default 600), to protect the AWS credits.
+- `FRONTDESK_MCP_URL`: the MCP server the agent uses (default: this same server).
+
+## How it works
+```
+Browser (simulator) ──POST /api/conversation──> Agent (Amazon Nova on Bedrock, Converse + tool use)
+                                                   │  tools/list, tools/call (Streamable HTTP)
+                                                   ▼
+Alexa+ / MCP Inspector ──────────POST /mcp──────> MCP server ──> SQLite schedule <── /dashboard (live)
+```
+The agent talks to the MCP server over HTTP exactly like Alexa+ would, so the demo shows the real MCP round trip.
 
 ## Status
-- [x] Servidor MCP em `POST /mcp` (Streamable HTTP, MCP spec 2025-11-25)
-- [x] Agenda em SQLite com dados de uma barbearia fictícia
-- [x] As seis ferramentas de agenda, com testes
-- [x] Simulador de voz com agente no Amazon Bedrock
-- [x] Painel do dono ao vivo
-- [x] Template de deploy na AWS (EC2 + HTTPS + papel IAM para o Nova)
-- [x] Deploy publicado na AWS (EC2 + HTTPS)
+- [x] MCP server at `POST /mcp` (Streamable HTTP, MCP spec 2025-11-25)
+- [x] SQLite schedule with a fictional barbershop
+- [x] Six booking tools, with tests
+- [x] Voice simulator with the agent on Amazon Bedrock
+- [x] Live owner dashboard
+- [x] AWS deployment (EC2 + HTTPS + IAM role for Nova), published
 
-## Rodar localmente
-Requer Python 3.10 ou superior.
+## Run locally
+Requires Python 3.10 or later.
 
 ```bash
 python -m venv .venv
@@ -56,23 +68,25 @@ pip install -r requirements.txt
 python -m frontdesk.server
 ```
 
-O servidor sobe em `http://127.0.0.1:8000/mcp` e a verificação de saúde em `http://127.0.0.1:8000/health`.
-Abra `http://127.0.0.1:8000/demo` no Chrome para ver o simulador e o painel (para o agente, rode antes `aws login` e defina `AWS_PROFILE`).
+The server starts at `http://127.0.0.1:8000/mcp` with a health check at `http://127.0.0.1:8000/health`.
+Open `http://127.0.0.1:8000/demo` in Chrome or Edge to see the simulator and the dashboard (for the Bedrock agent, run `aws login` first and set `AWS_PROFILE`; to try it without AWS, set `FRONTDESK_AGENT=rehearsal`).
+On Windows, `run-demo.cmd` (Bedrock) and `run-rehearsal.cmd` (no Bedrock) do all of this with a double click.
 
-Variáveis opcionais:
-- `FRONTDESK_DB`: caminho do banco SQLite (padrão: `frontdesk.db` na raiz).
-- `FRONTDESK_DEMO=0`: não cria os agendamentos de exemplo.
-- `FRONTDESK_AGORA=2026-10-23T08:00`: fixa o relógio, útil para gravar a demo.
+Optional settings:
+- `FRONTDESK_DB`: path of the SQLite database (default: `frontdesk.db` in the repository root).
+- `FRONTDESK_DEMO=0`: don't create the sample appointments.
+- `FRONTDESK_NOW=2026-10-23T08:00`: pins the clock, handy for recording the demo.
+- `FRONTDESK_TZ`: the business time zone (default `America/Los_Angeles`).
 
-## Publicar na AWS
-Uma instância EC2 com HTTPS (Caddy) e papel IAM só para o Amazon Nova, criada por CloudFormation. Passo a passo, custos e limpeza em [`deploy/README.md`](deploy/README.md).
+## Deploy to AWS
+One EC2 instance with HTTPS (Caddy) and an IAM role limited to Amazon Nova, created by CloudFormation. Steps, costs and cleanup in [`deploy/README.md`](deploy/README.md).
 
-## Testar
+## Test
 ```bash
 python -m pytest -q
 ```
 
-Para inspecionar com o MCP Inspector, conecte em `http://127.0.0.1:8000/mcp` usando o transporte Streamable HTTP.
+To inspect it with the MCP Inspector, connect to `http://127.0.0.1:8000/mcp` using the Streamable HTTP transport.
 
-## Licença
+## License
 MIT

@@ -1,10 +1,11 @@
 # Front Desk
 
-Servidor MCP em Python (SDK `mcp` 2.2.0, `MCPServer`) para a trilha Alexa+ do Amazon Developer Hackathon. Plano e notas no vault do Obsidian em `Documents\Front Desk Hackathon`.
+MCP server in Python (SDK `mcp` 2.2.0, `MCPServer`) for the Alexa+ track of the Amazon Developer Hackathon. Plan and notes live in the Obsidian vault at `Documents\Front Desk Hackathon`.
 
-- Projeto AWS na nova experiência da AWS, Região selecionada: **us-east-2**. Perfil da AWS CLI: `juan` (use `--profile juan`). Plano FREE com US$ 100 de crédito.
-- Plano Free: usar modelos Amazon Nova no Bedrock; não usar modelos de terceiros do Marketplace.
-- Rodar testes com `python -m pytest -q`.
+- Everything in the repository is in English (code, tool names, UI, docs): the judges are international.
+- AWS project in the new AWS experience, selected Region: **us-east-2**. AWS CLI profile: `juan` (use `--profile juan`). FREE plan with US$100 in credits.
+- Free plan: use Amazon Nova models on Bedrock; don't use third-party Marketplace models.
+- Run the tests with `python -m pytest -q`.
 
 <!-- BEGIN AWS Agent Toolkit rules -->
 # AWS Guidance for the new AWS experience

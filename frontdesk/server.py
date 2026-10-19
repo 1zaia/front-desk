@@ -1,8 +1,8 @@
-"""Servidor MCP do Front Desk: recepcionista por voz para pequenos negócios.
+"""Front Desk MCP server: a voice receptionist for small businesses.
 
-Transporte: Streamable HTTP em POST /mcp (MCP spec 2025-11-25 ou posterior).
-Cada ferramenta devolve um campo "fala", com a frase curta que o assistente de voz deve dizer,
-e os dados estruturados para quem quiser mostrar na tela.
+Transport: Streamable HTTP at POST /mcp (MCP spec 2025-11-25 or later).
+Every tool returns a "speech" field with the short sentence the voice assistant should say,
+plus structured data for anything that wants to show it on screen.
 """
 from __future__ import annotations
 
@@ -21,367 +21,398 @@ from mcp.server import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp_types import ToolAnnotations
 
-from frontdesk import agenda, agente, db, ensaio
-from frontdesk.agenda import ErroAgenda
+from frontdesk import agent, db, rehearsal, schedule
+from frontdesk.schedule import BookingError
 
 mcp = MCPServer(
     name="front-desk",
     title="Front Desk",
-    version="0.2.0",
+    version="0.3.0",
     instructions=(
-        "Você é a recepcionista de um pequeno negócio (uma barbearia). Use as ferramentas para "
-        "consultar serviços e horários livres, agendar, cancelar e reagendar. Sempre confirme o nome "
-        "do cliente antes de agendar. Responda com a frase do campo 'fala', curta e natural para voz."
+        "You are the receptionist of a small business (a barbershop). Use the tools to look up "
+        "services and open slots, and to book, cancel and reschedule appointments. Always confirm the "
+        "customer's name before booking. Reply with the sentence in the 'speech' field, short and natural for voice."
     ),
 )
+
+READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False)
 
 
 def _conn():
     conn = db.connect()
     db.init_db(conn)
     if os.environ.get("FRONTDESK_DEMO", "1") != "0":
-        agenda.semear_demo(conn, agenda.agora().date())
+        schedule.seed_demo(conn, schedule.now().date())
     return conn
 
 
-def _erro(e: ErroAgenda) -> dict:
-    return {"ok": False, "fala": str(e)}
+def _error(e: BookingError) -> dict:
+    return {"ok": False, "speech": str(e)}
 
 
-def _quando(a: dict, hoje: date) -> str:
-    inicio = datetime.fromisoformat(a["inicio"])
-    return f"{agenda.falar_data(inicio.date(), hoje)} às {agenda.falar_hora(inicio.time())} com {a['profissional']}"
+def _when(a: dict, today: date) -> str:
+    start = datetime.fromisoformat(a["start"])
+    return f"{schedule.say_date_on(start.date(), today)} at {schedule.say_time(start.time())} with {a['staff']}"
 
 
-def _resumo_ag(a: dict, hoje: date) -> str:
-    primeiro_nome = a["cliente"].split()[0]
-    return f"{a['servico'].lower()} de {primeiro_nome} {_quando(a, hoje)}"
+def _describe(a: dict, today: date) -> str:
+    first_name = a["customer"].split()[0]
+    return f"{first_name}'s {a['service'].lower()} {_when(a, today)}"
 
 
-def _juntar(itens: list[str]) -> str:
-    return itens[0] if len(itens) == 1 else ", ".join(itens[:-1]) + " ou " + itens[-1]
-
-
-@mcp.tool(title="Listar serviços e preços", annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False))
-def listar_servicos() -> dict[str, Any]:
-    """Lista os serviços oferecidos pelo negócio, com duração e preço."""
+@mcp.tool(title="List services and prices", annotations=READ_ONLY)
+def list_services() -> dict[str, Any]:
+    """Lists the services the business offers, with duration and price."""
     with _conn() as conn:
-        servicos = db.listar_servicos(conn)
-        negocio = db.nome_do_negocio(conn)
-    itens = [f"{s['nome']} ({s['duracao_min']} min, {agenda.reais(s['preco_centavos'])})" for s in servicos]
-    return {"ok": True, "fala": f"Na {negocio} temos: " + "; ".join(itens) + ".", "servicos": servicos}
-
-
-@mcp.tool(title="Consultar horários livres", annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False))
-def consultar_horarios_livres(
-    data: Annotated[str, Field(description="Dia desejado: 2026-10-23, 23/10, hoje, amanhã ou o dia da semana (ex.: sexta).")],
-    servico: Annotated[str, Field(description="Nome do serviço, ex.: corte, barba, corte e barba.")],
-    periodo: Annotated[str | None, Field(description="Opcional: manhã, tarde ou noite.")] = None,
-    profissional: Annotated[str | None, Field(description="Opcional: nome do profissional preferido.")] = None,
-) -> dict[str, Any]:
-    """Mostra os horários livres para um serviço num dia, opcionalmente por período e profissional."""
-    momento = agenda.agora()
-    try:
-        with _conn() as conn:
-            d = agenda.interpretar_data(data, momento.date())
-            s = agenda.buscar_servico(conn, servico)
-            p = agenda.buscar_profissional(conn, profissional)
-            aberto = agenda._funcionamento(conn, d) is not None
-            livres = agenda.horarios_livres(conn, d, s, momento, periodo, p) if aberto else []
-    except ErroAgenda as e:
-        return _erro(e)
-    quando = agenda.falar_data(d, momento.date())
-    if not aberto:
-        return {"ok": True, "fala": f"Não abrimos {quando}.", "data": d.isoformat(), "aberto": False, "horarios": []}
-    trecho = f" de {periodo}" if periodo else ""
-    if not livres:
-        return {"ok": True, "fala": f"Não tenho horário livre para {s.nome.lower()} {quando}{trecho}.", "data": d.isoformat(), "horarios": []}
-    horarios = []
-    for item in livres:
-        if item["horario"] not in horarios:
-            horarios.append(item["horario"])
-    falados = [agenda.falar_hora(datetime.strptime(h, "%H:%M").time()) for h in horarios[:3]]
-    lista = _juntar(falados)
+        services = db.list_services(conn)
+        business = db.business_name(conn)
+    items = [f"a {s['name'].lower()} for {schedule.dollars(s['price_cents'])}" for s in services]
     return {
         "ok": True,
-        "fala": f"Para {s.nome.lower()} {quando}{trecho} tenho {lista}. Qual prefere?",
-        "data": d.isoformat(),
-        "servico": s.nome,
-        "horarios": livres,
+        "speech": f"At {business} we offer {schedule.join_and(items)}.",
+        "services": services,
     }
 
 
-@mcp.tool(title="Agendar horário", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
-def agendar(
-    cliente: Annotated[str, Field(description="Nome do cliente.")],
-    servico: Annotated[str, Field(description="Nome do serviço.")],
-    data: Annotated[str, Field(description="Dia: 2026-10-23, 23/10, hoje, amanhã ou o dia da semana.")],
-    horario: Annotated[str, Field(description="Horário de início, ex.: 9h, 9:30, 14h30.")],
-    profissional: Annotated[str | None, Field(description="Opcional: profissional desejado.")] = None,
+@mcp.tool(title="Check open slots", annotations=READ_ONLY)
+def check_availability(
+    date: Annotated[str, Field(description="Requested day: 2026-10-23, October 23, today, tomorrow or a weekday (e.g. Friday).")],
+    service: Annotated[str, Field(description="Service name, e.g. haircut, beard trim, haircut and beard.")],
+    period: Annotated[str | None, Field(description="Optional: morning, afternoon or evening.")] = None,
+    barber: Annotated[str | None, Field(description="Optional: name of the preferred barber.")] = None,
 ) -> dict[str, Any]:
-    """Marca um horário. Confere o funcionamento e se o horário está livre antes de gravar."""
-    momento = agenda.agora()
+    """Shows the open start times for a service on a day, optionally by period and barber."""
+    moment = schedule.now()
     try:
         with _conn() as conn:
-            d = agenda.interpretar_data(data, momento.date())
-            h = agenda.interpretar_horario(horario)
-            s = agenda.buscar_servico(conn, servico)
-            p = agenda.buscar_profissional(conn, profissional)
-            ag = agenda.agendar(conn, cliente, s, datetime.combine(d, h), momento, p)
-    except ErroAgenda as e:
-        return _erro(e)
+            d = schedule.parse_date(date, moment.date())
+            s = schedule.find_service(conn, service)
+            b = schedule.find_staff(conn, barber)
+            is_open = schedule.hours_for(conn, d) is not None
+            slots = schedule.open_slots(conn, d, s, moment, period, b) if is_open else []
+    except BookingError as e:
+        return _error(e)
+    when = schedule.say_date_on(d, moment.date())
+    if not is_open:
+        return {"ok": True, "speech": f"Sorry, we're closed {when}.", "date": d.isoformat(), "open": False, "slots": []}
+    part = ""
+    if period:
+        p = schedule.PERIOD_ALIASES.get(schedule.normalize(period), schedule.normalize(period))
+        if when == "today":
+            when, part = ("tonight" if p == "evening" else f"this {p}"), ""
+        elif when == "tomorrow":
+            part = f" {p}"
+        else:
+            part = f" in the {p}"
+    with_whom = f" with {b.name}" if b else ""
+    if not slots:
+        return {
+            "ok": True,
+            "speech": f"Sorry, there's nothing open for a {s.name.lower()} {when}{part}{with_whom}.",
+            "date": d.isoformat(), "service": s.name, "slots": [],
+        }
+    times: list[str] = []
+    for item in slots:
+        if item["time"] not in times:
+            times.append(item["time"])
+    spoken = [schedule.say_time(datetime.strptime(t, "%H:%M").time()) for t in times[:3]]
     return {
         "ok": True,
-        "fala": f"Pronto, {ag['cliente'].split()[0]}! Marquei {ag['servico'].lower()} para {_quando(ag, momento.date())}.",
-        "agendamento": ag,
+        "speech": f"For a {s.name.lower()} {when}{part}{with_whom}, I have {schedule.join_or(spoken)}. Which works best?",
+        "date": d.isoformat(),
+        "service": s.name,
+        "slots": slots,
     }
 
 
-@mcp.tool(title="Cancelar horário", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False))
-def cancelar(
-    cliente: Annotated[str, Field(description="Nome do cliente.")],
-    data: Annotated[str | None, Field(description="Opcional: dia do agendamento, se o cliente tiver mais de um.")] = None,
+@mcp.tool(
+    title="Book an appointment",
+    annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False),
+)
+def book_appointment(
+    customer_name: Annotated[str, Field(description="Customer's name.")],
+    service: Annotated[str, Field(description="Service name.")],
+    date: Annotated[str, Field(description="Day: 2026-10-23, October 23, today, tomorrow or a weekday.")],
+    time: Annotated[str, Field(description="Start time, e.g. 9 AM, 9:30, 2:30 PM.")],
+    barber: Annotated[str | None, Field(description="Optional: requested barber.")] = None,
 ) -> dict[str, Any]:
-    """Cancela o próximo agendamento do cliente (ou o do dia informado)."""
-    momento = agenda.agora()
+    """Books an appointment. Checks opening hours and that the slot is free before saving."""
+    moment = schedule.now()
     try:
         with _conn() as conn:
-            d = agenda.interpretar_data(data, momento.date()) if data else None
-            achados = agenda.buscar_agendamentos(conn, cliente, momento, d)
-            if not achados:
-                return {"ok": False, "fala": f"Não encontrei nenhum horário marcado para {cliente}."}
-            if len(achados) > 1 and d is None:
-                lista = "; ".join(_resumo_ag(a, momento.date()) for a in achados[:3])
-                return {"ok": False, "fala": f"Encontrei mais de um horário: {lista}. Qual deles quer cancelar?", "agendamentos": achados}
-            ag = agenda.cancelar(conn, achados[0]["id"])
-    except ErroAgenda as e:
-        return _erro(e)
-    return {"ok": True, "fala": f"Cancelei {_resumo_ag(ag, momento.date())}.", "agendamento": ag}
+            d = schedule.parse_date(date, moment.date())
+            h = schedule.parse_time(time)
+            s = schedule.find_service(conn, service)
+            b = schedule.find_staff(conn, barber)
+            appt = schedule.book(conn, customer_name, s, datetime.combine(d, h), moment, b)
+    except BookingError as e:
+        return _error(e)
+    first = appt["customer"].split()[0]
+    return {
+        "ok": True,
+        "speech": f"You're all set, {first}! A {appt['service'].lower()} {_when(appt, moment.date())}.",
+        "appointment": appt,
+    }
 
 
-@mcp.tool(title="Reagendar horário", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False))
-def reagendar(
-    cliente: Annotated[str, Field(description="Nome do cliente.")],
-    nova_data: Annotated[str, Field(description="Novo dia.")],
-    novo_horario: Annotated[str, Field(description="Novo horário, ex.: 16h.")],
-    data_atual: Annotated[str | None, Field(description="Opcional: dia do agendamento atual, se houver mais de um.")] = None,
+@mcp.tool(
+    title="Cancel an appointment",
+    annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False),
+)
+def cancel_appointment(
+    customer_name: Annotated[str, Field(description="Customer's name.")],
+    date: Annotated[str | None, Field(description="Optional: day of the appointment, if the customer has more than one.")] = None,
 ) -> dict[str, Any]:
-    """Muda o dia ou o horário de um agendamento, mantendo o profissional quando possível."""
-    momento = agenda.agora()
+    """Cancels the customer's next appointment (or the one on the given day)."""
+    moment = schedule.now()
     try:
         with _conn() as conn:
-            d_atual = agenda.interpretar_data(data_atual, momento.date()) if data_atual else None
-            achados = agenda.buscar_agendamentos(conn, cliente, momento, d_atual)
-            if not achados:
-                return {"ok": False, "fala": f"Não encontrei nenhum horário marcado para {cliente}."}
-            if len(achados) > 1 and d_atual is None:
-                lista = "; ".join(_resumo_ag(a, momento.date()) for a in achados[:3])
-                return {"ok": False, "fala": f"Encontrei mais de um horário: {lista}. Qual deles quer mudar?", "agendamentos": achados}
-            novo = datetime.combine(
-                agenda.interpretar_data(nova_data, momento.date()), agenda.interpretar_horario(novo_horario)
-            )
-            ag = agenda.reagendar(conn, achados[0]["id"], novo, momento)
-    except ErroAgenda as e:
-        return _erro(e)
-    return {"ok": True, "fala": f"Feito! Seu horário mudou para {_quando(ag, momento.date())}.", "agendamento": ag}
+            d = schedule.parse_date(date, moment.date()) if date else None
+            found = schedule.find_appointments(conn, customer_name, moment, d)
+            if not found:
+                return {"ok": False, "speech": f"I couldn't find an appointment for {customer_name}."}
+            if len(found) > 1 and d is None:
+                options = "; ".join(_describe(a, moment.date()) for a in found[:3])
+                return {"ok": False, "speech": f"I found more than one: {options}. Which one should I cancel?", "appointments": found}
+            appt = schedule.cancel(conn, found[0]["id"])
+    except BookingError as e:
+        return _error(e)
+    return {"ok": True, "speech": f"Done. I cancelled {_describe(appt, moment.date())}.", "appointment": appt}
 
 
-@mcp.tool(title="Resumo do dia para o dono", annotations=ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False))
-def resumo_do_dia(
-    data: Annotated[str | None, Field(description="Opcional: dia do resumo. Padrão: hoje.")] = None,
+@mcp.tool(
+    title="Reschedule an appointment",
+    annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False),
+)
+def reschedule_appointment(
+    customer_name: Annotated[str, Field(description="Customer's name.")],
+    new_time: Annotated[str, Field(description="New time, e.g. 4 PM.")],
+    new_date: Annotated[str | None, Field(description="Optional: new day. Default: same day as the current appointment.")] = None,
+    current_date: Annotated[str | None, Field(description="Optional: day of the current appointment, if there is more than one.")] = None,
 ) -> dict[str, Any]:
-    """Resumo para o dono: quantos clientes, próximo atendimento, receita prevista e tempo livre."""
-    momento = agenda.agora()
+    """Moves an appointment to another day or time, keeping the same barber when possible."""
+    moment = schedule.now()
     try:
         with _conn() as conn:
-            d = agenda.interpretar_data(data, momento.date()) if data else momento.date()
-            r = agenda.resumo_do_dia(conn, d, momento)
-    except ErroAgenda as e:
-        return _erro(e)
-    quando = agenda.falar_data(d, momento.date())
-    if not r["aberto"]:
-        return {"ok": True, "fala": f"Não abrimos {quando}.", **r}
-    if not r["total_clientes"]:
-        return {"ok": True, "fala": f"A agenda de {quando} está livre, sem clientes marcados.", **r}
-    n = r["total_clientes"]
-    qtd = "é 1 cliente" if n == 1 else f"são {n} clientes"
-    partes = [
-        f"{quando.capitalize()} {qtd}, com {agenda.reais(r['receita_prevista_centavos'])} previstos."
-    ]
-    if r["proximo"]:
-        partes.append(f"O próximo é {_resumo_ag(r['proximo'], momento.date())}.")
-    livres = r["minutos_livres_por_profissional"]
-    if livres:
-        mais_livre = max(livres, key=livres.get)
-        partes.append(f"{mais_livre} tem mais tempo livre, cerca de {livres[mais_livre] // 60} horas.")
-    return {"ok": True, "fala": " ".join(partes), **r}
+            d_current = schedule.parse_date(current_date, moment.date()) if current_date else None
+            found = schedule.find_appointments(conn, customer_name, moment, d_current)
+            if not found:
+                return {"ok": False, "speech": f"I couldn't find an appointment for {customer_name}."}
+            if len(found) > 1 and d_current is None:
+                options = "; ".join(_describe(a, moment.date()) for a in found[:3])
+                return {"ok": False, "speech": f"I found more than one: {options}. Which one should I move?", "appointments": found}
+            current_day = datetime.fromisoformat(found[0]["start"]).date()
+            day = schedule.parse_date(new_date, moment.date()) if new_date else current_day
+            new_start = datetime.combine(day, schedule.parse_time(new_time))
+            appt = schedule.reschedule(conn, found[0]["id"], new_start, moment)
+    except BookingError as e:
+        return _error(e)
+    return {"ok": True, "speech": f"Done! Your appointment is now {_when(appt, moment.date())}.", "appointment": appt}
 
+
+@mcp.tool(title="Owner's daily summary", annotations=READ_ONLY)
+def daily_summary(
+    date: Annotated[str | None, Field(description="Optional: day of the summary. Default: today.")] = None,
+) -> dict[str, Any]:
+    """Summary for the owner: number of customers, next appointment, expected revenue and free time."""
+    moment = schedule.now()
+    try:
+        with _conn() as conn:
+            d = schedule.parse_date(date, moment.date()) if date else moment.date()
+            r = schedule.daily_summary(conn, d, moment)
+    except BookingError as e:
+        return _error(e)
+    when = schedule.say_date(d, moment.date())
+    if not r["open"]:
+        return {"ok": True, "speech": f"The shop is closed {schedule.say_date_on(d, moment.date())}.", **r}
+    if not r["total_customers"]:
+        return {"ok": True, "speech": f"{when.capitalize()} is wide open, with no appointments yet.", **r}
+    n = r["total_customers"]
+    count = "1 customer" if n == 1 else f"{n} customers"
+    parts = [f"{when.capitalize()} you have {count}, with {schedule.dollars(r['expected_revenue_cents'])} expected."]
+    if r["next"]:
+        parts.append(f"Next up is {_describe(r['next'], moment.date())}.")
+    free = r["free_minutes_by_staff"]
+    if free:
+        most_free = max(free, key=free.get)
+        hours = free[most_free] // 60
+        parts.append(f"{most_free} has the most free time, about {hours} hour{'s' if hours != 1 else ''}.")
+    return {"ok": True, "speech": " ".join(parts), **r}
+
+
+# ---------------------------------------------------------------- HTTP routes
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "servidor": "front-desk"})
+    return JSONResponse({"status": "ok", "server": "front-desk"})
 
 
-@mcp.custom_route("/api/agenda", methods=["GET"])
-async def api_agenda(request: Request) -> JSONResponse:
-    """Agenda de um dia em JSON, para o painel do dono. Parâmetro opcional: ?data=AAAA-MM-DD."""
-    momento = agenda.agora()
+@mcp.custom_route("/api/schedule", methods=["GET"])
+async def api_schedule(request: Request) -> JSONResponse:
+    """One day of appointments as JSON. Optional parameter: ?date=YYYY-MM-DD."""
+    moment = schedule.now()
     try:
-        d = agenda.interpretar_data(request.query_params.get("data", "hoje"), momento.date())
-    except ErroAgenda as e:
-        return JSONResponse({"erro": str(e)}, status_code=400)
+        d = schedule.parse_date(request.query_params.get("date", "today"), moment.date())
+    except BookingError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
     with _conn() as conn:
-        itens = agenda.agendamentos_do_dia(conn, d)
-        negocio = db.nome_do_negocio(conn)
-    return JSONResponse({"negocio": negocio, "data": d.isoformat(), "agendamentos": itens})
+        items = schedule.appointments_on(conn, d)
+        business = db.business_name(conn)
+    return JSONResponse({"business": business, "date": d.isoformat(), "appointments": items})
 
 
-@mcp.custom_route("/api/semana", methods=["GET"])
-async def api_semana(request: Request) -> JSONResponse:
-    """Agenda dos próximos dias para o painel ao vivo. Parâmetros opcionais: ?inicio=hoje&dias=7."""
-    momento = agenda.agora()
+@mcp.custom_route("/api/week", methods=["GET"])
+async def api_week(request: Request) -> JSONResponse:
+    """The next days of the schedule for the live dashboard. Optional parameters: ?start=today&days=7."""
+    moment = schedule.now()
     try:
-        inicio = agenda.interpretar_data(request.query_params.get("inicio", "hoje"), momento.date())
-        dias = max(1, min(14, int(request.query_params.get("dias", "7"))))
-    except (ErroAgenda, ValueError) as e:
-        return JSONResponse({"erro": str(e)}, status_code=400)
+        start = schedule.parse_date(request.query_params.get("start", "today"), moment.date())
+        days = max(1, min(14, int(request.query_params.get("days", "7"))))
+    except (BookingError, ValueError) as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
     with _conn() as conn:
-        negocio = db.nome_do_negocio(conn)
-        profissionais = [p.nome for p in agenda._profissionais(conn)]
-        lista = []
-        for i in range(dias):
-            d = inicio + timedelta(days=i)
-            janela = agenda._funcionamento(conn, d)
-            lista.append({
-                "data": d.isoformat(),
-                "dia": agenda.NOMES_DIAS[d.weekday()],
-                "aberto": janela is not None,
-                "abre": janela[0].strftime("%H:%M") if janela else None,
-                "fecha": janela[1].strftime("%H:%M") if janela else None,
-                "agendamentos": agenda.agendamentos_do_dia(conn, d),
+        business = db.business_name(conn)
+        staff = [p.name for p in schedule.all_staff(conn)]
+        listing = []
+        for i in range(days):
+            d = start + timedelta(days=i)
+            window = schedule.hours_for(conn, d)
+            listing.append({
+                "date": d.isoformat(),
+                "weekday": schedule.WEEKDAY_NAMES[d.weekday()],
+                "open": window is not None,
+                "opens": window[0].strftime("%H:%M") if window else None,
+                "closes": window[1].strftime("%H:%M") if window else None,
+                "appointments": schedule.appointments_on(conn, d),
             })
     return JSONResponse({
-        "negocio": negocio,
-        "agora": momento.isoformat(timespec="minutes"),
-        "profissionais": profissionais,
-        "dias": lista,
+        "business": business,
+        "now": moment.isoformat(timespec="minutes"),
+        "staff": staff,
+        "days": listing,
     })
 
 
 WEB = Path(__file__).resolve().parent / "web"
 log = logging.getLogger("frontdesk")
 
+RATE_PER_IP = int(os.environ.get("FRONTDESK_RATE_PER_IP", "40"))  # utterances per IP every 10 minutes
+DAILY_LIMIT = int(os.environ.get("FRONTDESK_DAILY_LIMIT", "600"))  # utterances per day for the whole server
+_utterances_by_ip: dict[str, list[float]] = {}
+_utterances_today: dict[str, int] = {}
+_bedrock_down: dict = {"until": 0.0, "notice": ""}  # in auto mode, skip Bedrock for a while after a failure
 
-LIMITE_POR_IP = int(os.environ.get("FRONTDESK_LIMITE_POR_IP", "40"))  # falas por IP a cada 10 minutos
-LIMITE_DIARIO = int(os.environ.get("FRONTDESK_LIMITE_DIARIO", "600"))  # falas por dia no servidor todo
-_falas_por_ip: dict[str, list[float]] = {}
-_falas_hoje: dict[str, int] = {}
-_bedrock_fora: dict = {"ate": 0.0, "aviso": ""}  # no modo auto, até quando pular o Bedrock depois de uma falha
 
-
-def _dentro_do_limite(request: Request) -> bool:
-    """Protege os créditos da AWS num endpoint público: limite por IP e teto diário."""
-    encaminhado = request.headers.get("x-forwarded-for", "")
-    ip = encaminhado.split(",")[0].strip() or (request.client.host if request.client else "?")
-    agora = time.time()
-    recentes = [t for t in _falas_por_ip.get(ip, []) if agora - t < 600]
-    dia = date.today().isoformat()
-    if len(recentes) >= LIMITE_POR_IP or _falas_hoje.get(dia, 0) >= LIMITE_DIARIO:
-        _falas_por_ip[ip] = recentes
+def _within_limits(request: Request) -> bool:
+    """Protects the AWS credits on a public endpoint: per-IP rate limit and a daily cap."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    ip = forwarded.split(",")[0].strip() or (request.client.host if request.client else "?")
+    t = time.time()
+    recent = [x for x in _utterances_by_ip.get(ip, []) if t - x < 600]
+    day = date.today().isoformat()
+    if len(recent) >= RATE_PER_IP or _utterances_today.get(day, 0) >= DAILY_LIMIT:
+        _utterances_by_ip[ip] = recent
         return False
-    recentes.append(agora)
-    _falas_por_ip[ip] = recentes
-    if dia not in _falas_hoje:  # virou o dia: zera a contagem
-        _falas_hoje.clear()
-    _falas_hoje[dia] = _falas_hoje.get(dia, 0) + 1
+    recent.append(t)
+    _utterances_by_ip[ip] = recent
+    if day not in _utterances_today:  # new day: reset the count
+        _utterances_today.clear()
+    _utterances_today[day] = _utterances_today.get(day, 0) + 1
     return True
 
 
-@mcp.custom_route("/api/conversa", methods=["POST"])
-async def api_conversa(request: Request) -> JSONResponse:
-    """Uma fala do cliente para o agente no Bedrock. Corpo: {"texto": "...", "sessao": "opcional"}."""
-    if not _dentro_do_limite(request):
-        return JSONResponse({"erro": "Muitas falas em pouco tempo. Espere alguns minutos e tente de novo."}, status_code=429)
+def agent_mode() -> str:
+    return os.environ.get("FRONTDESK_AGENT", "bedrock").strip().lower()
+
+
+@mcp.custom_route("/api/conversation", methods=["POST"])
+async def api_conversation(request: Request) -> JSONResponse:
+    """One customer utterance for the agent on Bedrock. Body: {"text": "...", "session": "optional"}."""
+    if not _within_limits(request):
+        return JSONResponse({"error": "Too many requests in a short time. Please wait a few minutes and try again."}, status_code=429)
     try:
-        corpo = await request.json()
+        body = await request.json()
     except ValueError:
-        return JSONResponse({"erro": "Corpo JSON inválido."}, status_code=400)
-    texto = str(corpo.get("texto", "")).strip()
-    if not texto:
-        return JSONResponse({"erro": "Mande o campo 'texto' com a fala do cliente."}, status_code=400)
-    if len(texto) > 500:
-        return JSONResponse({"erro": "Fala longa demais."}, status_code=400)
+        return JSONResponse({"error": "Invalid JSON body."}, status_code=400)
+    text = str(body.get("text", "")).strip()
+    if not text:
+        return JSONResponse({"error": "Send the customer's words in the 'text' field."}, status_code=400)
+    if len(text) > 500:
+        return JSONResponse({"error": "That message is too long."}, status_code=400)
     with _conn() as conn:
-        negocio = db.nome_do_negocio(conn)
-    modo = os.environ.get("FRONTDESK_AGENTE", "bedrock").lower()
-    sessao = corpo.get("sessao") or None
+        business = db.business_name(conn)
+    mode = agent_mode()
+    session = body.get("session") or None
     try:
-        if modo == "ensaio":
-            resultado = await ensaio.responder(texto, sessao, negocio=negocio)
-        elif modo == "auto" and time.time() < _bedrock_fora["ate"]:
-            # o Bedrock falhou há pouco: não insiste a cada fala, segue no modo ensaio por alguns minutos
-            resultado = await ensaio.responder(texto, sessao, negocio=negocio)
-            resultado["aviso"] = _bedrock_fora["aviso"]
+        if mode == "rehearsal":
+            result = await rehearsal.respond(text, session, business=business)
+        elif mode == "auto" and time.time() < _bedrock_down["until"]:
+            # Bedrock failed recently: don't retry on every utterance, stay in rehearsal mode for a few minutes
+            result = await rehearsal.respond(text, session, business=business)
+            result["notice"] = _bedrock_down["notice"]
         else:
             try:
-                resultado = await agente.responder(texto, sessao, negocio=negocio)
-            except agente.ErroAgente as e:
-                if modo != "auto":
+                result = await agent.respond(text, session, business=business)
+            except agent.AgentError as e:
+                if mode != "auto":
                     raise
-                # modo auto (usado no deploy): se o Bedrock falhar, a demo continua no modo ensaio, avisando na tela
-                log.warning("Bedrock indisponível, usando o modo ensaio: %s", e)
-                _bedrock_fora.update(ate=time.time() + 300, aviso=f"Bedrock indisponível agora, respondendo em modo ensaio. Motivo: {e}")
-                resultado = await ensaio.responder(texto, sessao, negocio=negocio)
-                resultado["aviso"] = _bedrock_fora["aviso"]
-    except agente.ErroAgente as e:  # credencial expirada, modelo sem acesso, rede: mostra na tela em vez de travar
-        log.warning("Falha no agente: %s", e, exc_info=e.__cause__)
-        return JSONResponse({"erro": str(e)}, status_code=502)
-    return JSONResponse(resultado)
+                # auto mode (used by the deployment): if Bedrock fails, the demo keeps going in rehearsal mode
+                log.warning("Bedrock unavailable, using rehearsal mode: %s", e)
+                _bedrock_down.update(until=time.time() + 300, notice=f"Bedrock is unavailable right now, answering in rehearsal mode. Reason: {e}")
+                result = await rehearsal.respond(text, session, business=business)
+                result["notice"] = _bedrock_down["notice"]
+    except agent.AgentError as e:  # expired credentials, no model access, network: show it instead of hanging
+        log.warning("Agent failure: %s", e, exc_info=e.__cause__)
+        return JSONResponse({"error": str(e)}, status_code=502)
+    return JSONResponse(result)
 
 
-@mcp.custom_route("/api/conversa/{sessao}", methods=["DELETE"])
-async def api_encerrar(request: Request) -> JSONResponse:
-    agente.encerrar_sessao(request.path_params["sessao"])
-    ensaio.encerrar_sessao(request.path_params["sessao"])
+@mcp.custom_route("/api/conversation/{session}", methods=["DELETE"])
+async def api_end_conversation(request: Request) -> JSONResponse:
+    agent.end_session(request.path_params["session"])
+    rehearsal.end_session(request.path_params["session"])
     return JSONResponse({"ok": True})
 
 
-def _pagina(nome: str):
-    async def rota(_: Request) -> FileResponse:
-        return FileResponse(WEB / nome, media_type="text/html; charset=utf-8")
-    return rota
+def _page(name: str):
+    async def route(_: Request) -> FileResponse:
+        return FileResponse(WEB / name, media_type="text/html; charset=utf-8")
+    return route
 
 
-mcp.custom_route("/simulador", methods=["GET"])(_pagina("simulador.html"))
-mcp.custom_route("/painel", methods=["GET"])(_pagina("painel.html"))
-mcp.custom_route("/demo", methods=["GET"])(_pagina("demo.html"))
+def _redirect(target: str):
+    async def route(_: Request) -> RedirectResponse:
+        return RedirectResponse(target)
+    return route
 
 
-@mcp.custom_route("/", methods=["GET"])
-async def inicio(_: Request) -> RedirectResponse:
-    return RedirectResponse("/demo")
+mcp.custom_route("/simulator", methods=["GET"])(_page("simulator.html"))
+mcp.custom_route("/dashboard", methods=["GET"])(_page("dashboard.html"))
+mcp.custom_route("/demo", methods=["GET"])(_page("demo.html"))
+mcp.custom_route("/", methods=["GET"])(_redirect("/demo"))
+# old Portuguese paths from the first version, kept so earlier links still work
+mcp.custom_route("/simulador", methods=["GET"])(_redirect("/simulator"))
+mcp.custom_route("/painel", methods=["GET"])(_redirect("/dashboard"))
 
 
-def _seguranca_de_transporte() -> TransportSecuritySettings | None:
-    """Proteção contra DNS rebinding do SDK, liberando também o domínio público do deploy.
+def _transport_security() -> TransportSecuritySettings | None:
+    """The SDK's DNS rebinding protection, also allowing the deployment's public domain.
 
-    Sem isso, atrás de um proxy (Caddy, load balancer) o SDK responde 421 "Invalid Host header",
-    porque só aceita localhost. FRONTDESK_HOSTS lista os domínios públicos, separados por vírgula.
+    Without this, behind a proxy (Caddy, a load balancer) the SDK answers 421 "Invalid Host header",
+    because it only accepts localhost. FRONTDESK_HOSTS lists the public domains, comma-separated.
     """
-    publicos = [h.strip() for h in os.environ.get("FRONTDESK_HOSTS", "").split(",") if h.strip()]
-    if not publicos:
-        return None  # o SDK aplica o padrão: só localhost
-    locais = ["127.0.0.1", "localhost", "[::1]"]
-    hosts = [f"{h}{porta}" for h in locais + publicos for porta in ("", ":*")]
-    origens = [f"http://{h}:*" for h in locais] + [f"https://{h}" for h in publicos]
-    return TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origens)
+    public = [h.strip() for h in os.environ.get("FRONTDESK_HOSTS", "").split(",") if h.strip()]
+    if not public:
+        return None  # SDK default: localhost only
+    local = ["127.0.0.1", "localhost", "[::1]"]
+    hosts = [f"{h}{port}" for h in local + public for port in ("", ":*")]
+    origins = [f"http://{h}:*" for h in local] + [f"https://{h}" for h in public]
+    return TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origins)
 
 
 def app():
-    """App ASGI (para uvicorn ou deploy)."""
-    return mcp.streamable_http_app(
-        stateless_http=True, json_response=True, transport_security=_seguranca_de_transporte()
-    )
+    """ASGI app (for uvicorn or the deployment)."""
+    return mcp.streamable_http_app(stateless_http=True, json_response=True, transport_security=_transport_security())
 
 
 def main() -> None:
