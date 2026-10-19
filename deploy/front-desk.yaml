@@ -1,21 +1,21 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Front Desk (Amazon Developer Hackathon): servidor MCP, simulador de voz e painel do dono
-  numa instancia EC2 com HTTPS (Caddy + Let's Encrypt em <ip>.sslip.io) e permissao para
-  chamar o Amazon Nova no Bedrock pelo papel da instancia, sem chaves de acesso.
+  Front Desk (Amazon Developer Hackathon): MCP server, voice simulator and owner dashboard
+  on an EC2 instance with HTTPS (Caddy + Let's Encrypt on <ip>.sslip.io) and permission to
+  call Amazon Nova on Bedrock through the instance role, with no access keys.
 
 Parameters:
   Branch:
     Type: String
     Default: main
-    Description: Branch do repositorio 1zaia/front-desk que sera publicada.
+    Description: Branch of the 1zaia/front-desk repository to deploy.
   AgentMode:
     Type: String
     Default: auto
-    AllowedValues: [auto, bedrock, ensaio]
+    AllowedValues: [auto, bedrock, rehearsal]
     Description: >
-      auto = Bedrock e, se falhar (ex.: sem cota), modo ensaio com aviso na tela;
-      bedrock = so Bedrock; ensaio = sem Bedrock.
+      auto = Bedrock, and if it fails (e.g. no quota) rehearsal mode with a notice on screen;
+      bedrock = Bedrock only; rehearsal = no Bedrock.
   InstanceType:
     Type: String
     Default: t3.micro
@@ -28,7 +28,7 @@ Resources:
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Front Desk - HTTP e HTTPS publicos (sem SSH; acesso administrativo pelo Session Manager)
+      GroupDescription: Front Desk - public HTTP and HTTPS (no SSH; admin access through Session Manager)
       SecurityGroupIngress:
         - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
         - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
@@ -40,7 +40,7 @@ Resources:
   InstanceRole:
     Type: AWS::IAM::Role
     Properties:
-      Description: Papel da instancia do Front Desk - chama o Amazon Nova no Bedrock
+      Description: Front Desk instance role - calls Amazon Nova on Bedrock
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -54,7 +54,7 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Sid: SomenteAmazonNova
+              - Sid: AmazonNovaOnly
                 Effect: Allow
                 Action:
                   - bedrock:InvokeModel
@@ -94,10 +94,10 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          # Instala e sobe o Front Desk. Log: /var/log/cloud-init-output.log
+          # Installs and starts Front Desk. Log: /var/log/cloud-init-output.log
           set -euxo pipefail
           IP="${PublicIp}"
-          DOMINIO="${!IP//./-}.sslip.io"
+          DOMAIN="${!IP//./-}.sslip.io"
 
           dnf install -y python3.11 python3.11-pip git tar
           id frontdesk || useradd --system --create-home --home-dir /opt/front-desk frontdesk
@@ -109,8 +109,8 @@ Resources:
           chown -R frontdesk:frontdesk /opt/front-desk
 
           cat > /etc/front-desk.env <<CONFIG
-          FRONTDESK_HOSTS=$DOMINIO
-          FRONTDESK_AGENTE=${AgentMode}
+          FRONTDESK_HOSTS=$DOMAIN
+          FRONTDESK_AGENT=${AgentMode}
           FRONTDESK_DB=/opt/front-desk/frontdesk.db
           AWS_REGION=${AWS::Region}
           HOST=127.0.0.1
@@ -119,7 +119,7 @@ Resources:
 
           cat > /etc/systemd/system/front-desk.service <<'UNIT'
           [Unit]
-          Description=Front Desk (servidor MCP, simulador e painel)
+          Description=Front Desk (MCP server, simulator and dashboard)
           After=network-online.target
           Wants=network-online.target
 
@@ -135,12 +135,12 @@ Resources:
           WantedBy=multi-user.target
           UNIT
 
-          # Caddy: HTTPS automatico (Let's Encrypt) na frente do servidor
+          # Caddy: automatic HTTPS (Let's Encrypt) in front of the server
           curl -fsSL -o /tmp/caddy.tar.gz https://github.com/caddyserver/caddy/releases/download/v2.8.4/caddy_2.8.4_linux_amd64.tar.gz
           tar -xzf /tmp/caddy.tar.gz -C /usr/local/bin caddy
           mkdir -p /etc/caddy
           cat > /etc/caddy/Caddyfile <<CADDY
-          $DOMINIO {
+          $DOMAIN {
             encode gzip
             reverse_proxy 127.0.0.1:8000
           }
@@ -148,7 +148,7 @@ Resources:
 
           cat > /etc/systemd/system/caddy.service <<'UNIT'
           [Unit]
-          Description=Caddy (HTTPS do Front Desk)
+          Description=Caddy (Front Desk HTTPS)
           After=network-online.target front-desk.service
           Wants=network-online.target
 
@@ -164,7 +164,7 @@ Resources:
           UNIT
           mkdir -p /var/lib/caddy
 
-          # O certificado so sai depois que o IP elastico estiver ligado a esta instancia
+          # The certificate is only issued once the Elastic IP is attached to this instance
           for i in $(seq 1 60); do
             [ "$(curl -fsS https://checkip.amazonaws.com || true)" = "$IP" ] && break
             sleep 5
@@ -182,20 +182,20 @@ Resources:
 
 Outputs:
   DemoUrl:
-    Description: Simulador e painel lado a lado (abrir no Chrome ou no Edge)
+    Description: Simulator and dashboard side by side (open in Chrome or Edge)
     Value: !Sub
-      - https://${Dominio}.sslip.io/demo
-      - Dominio: !Join ["-", !Split [".", !Ref PublicIp]]
+      - https://${Domain}.sslip.io/demo
+      - Domain: !Join ["-", !Split [".", !Ref PublicIp]]
   McpUrl:
-    Description: Endpoint MCP (Streamable HTTP) para o MCP Inspector ou outro cliente
+    Description: MCP endpoint (Streamable HTTP) for the MCP Inspector or another client
     Value: !Sub
-      - https://${Dominio}.sslip.io/mcp
-      - Dominio: !Join ["-", !Split [".", !Ref PublicIp]]
-  PainelUrl:
-    Description: Painel do dono
+      - https://${Domain}.sslip.io/mcp
+      - Domain: !Join ["-", !Split [".", !Ref PublicIp]]
+  DashboardUrl:
+    Description: Owner dashboard
     Value: !Sub
-      - https://${Dominio}.sslip.io/painel
-      - Dominio: !Join ["-", !Split [".", !Ref PublicIp]]
+      - https://${Domain}.sslip.io/dashboard
+      - Domain: !Join ["-", !Split [".", !Ref PublicIp]]
   InstanceId:
-    Description: Instancia (acesso pelo Session Manager, sem SSH)
+    Description: Instance (access through Session Manager, no SSH)
     Value: !Ref Instance

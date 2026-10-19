@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Front Desk · Owner dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f6f7f5;
+    --paper: #ffffff;
+    --ink: #1b2422;
+    --ink-soft: #5d6a67;
+    --line: #dde2df;
+    --line-strong: #c3cbc7;
+    --red: #c8372d;
+    --blue: #1f4e79;
+    --fresh: #35c6d8;
+    --hour-px: 64px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: "Archivo", system-ui, sans-serif;
+    padding: 22px 16px 32px;
+    min-height: 100vh;
+  }
+  .dashboard { max-width: 1000px; margin: 0 auto; display: grid; gap: 18px; }
+
+  header { display: flex; justify-content: space-between; align-items: end; gap: 16px; flex-wrap: wrap; }
+  h1 {
+    margin: 0; font-size: clamp(26px, 4vw, 38px); line-height: 1;
+    font-variation-settings: "wdth" 125; font-weight: 800; letter-spacing: -.01em;
+  }
+  .sub { margin: 6px 0 0; color: var(--ink-soft); font-size: 15px; }
+  .live { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-soft); }
+  .live::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: #2f8f5b; }
+  .live.offline::before { background: var(--red); }
+
+  /* days */
+  .days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+  .day {
+    font: inherit; text-align: left; cursor: pointer;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 10px;
+    padding: 8px 10px; color: var(--ink); display: grid; gap: 2px;
+  }
+  .day .name { font-size: 13px; color: var(--ink-soft); text-transform: capitalize; }
+  .day .num { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .day .count { font-size: 12px; color: var(--ink-soft); }
+  .day[aria-pressed="true"] { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+  .day.closed { opacity: .5; }
+  .day.pulse { animation: pulse 1.4s ease-out; }
+  @keyframes pulse { 0% { background: #dff6f8; } }
+
+  /* summary */
+  .summary { display: flex; gap: 28px; flex-wrap: wrap; }
+  .summary div { display: grid; }
+  .summary b { font-size: 24px; font-variant-numeric: tabular-nums; font-variation-settings: "wdth" 110; }
+  .summary span { font-size: 13px; color: var(--ink-soft); }
+
+  /* grid */
+  .grid { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  .head, .body { display: grid; grid-template-columns: 56px repeat(var(--columns), minmax(0, 1fr)); }
+  .head { border-bottom: 1px solid var(--line); }
+  .head div { padding: 10px 12px; font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .head div i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .body { position: relative; max-height: 78vh; overflow-y: auto; }
+  .hours div { height: var(--hour-px); font-size: 12px; color: var(--ink-soft); padding: 2px 8px; text-align: right; font-variant-numeric: tabular-nums; border-top: 1px solid var(--line); }
+  .staff-col { position: relative; border-left: 1px solid var(--line); background-image: repeating-linear-gradient(to bottom, var(--line) 0 1px, transparent 1px var(--hour-px)); }
+  .half { position: absolute; left: 0; right: 0; border-top: 1px dashed #eceeed; }
+
+  .appt {
+    position: absolute; left: 6px; right: 6px; border-radius: 8px; padding: 6px 9px;
+    color: #fff; overflow: hidden; display: grid; align-content: start; gap: 1px;
+    font-size: 13px; line-height: 1.2;
+  }
+  .appt strong { font-size: 14px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .appt span { opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .appt.short { display: flex; align-items: center; gap: 8px; padding-top: 0; padding-bottom: 0; }
+  .appt.short strong { flex: 0 1 auto; }
+  .appt.short span { flex: 1 1 auto; }
+  .appt.cancelled {
+    background: repeating-linear-gradient(135deg, #eef0ef 0 6px, #e2e6e4 6px 12px) !important;
+    color: var(--ink-soft); text-decoration: line-through;
+  }
+  .appt.fresh { animation: arrived 2.4s ease-out; box-shadow: 0 0 0 3px var(--fresh); }
+  @keyframes arrived {
+    0% { transform: scale(1.06); box-shadow: 0 0 0 8px var(--fresh); }
+    60% { transform: scale(1); }
+  }
+  .now { position: absolute; left: 0; right: 0; border-top: 2px solid var(--red); z-index: 2; pointer-events: none; }
+
+  .empty-day { padding: 28px; color: var(--ink-soft); }
+  .toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 15px; opacity: 0; transition: opacity .3s; pointer-events: none; max-width: calc(100% - 32px); }
+  .toast.visible { opacity: 1; }
+  :focus-visible { outline: 3px solid var(--fresh); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+  @media (max-width: 620px) {
+    .days { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .summary { gap: 18px; }
+  }
+</style>
+</head>
+<body>
+<main class="dashboard">
+  <header>
+    <div>
+      <h1 id="business">Main Street Barbers</h1>
+      <p class="sub">The day's schedule, updating itself with every booking</p>
+    </div>
+    <span class="live" id="status">Live</span>
+  </header>
+
+  <nav class="days" id="days" aria-label="Days of the week"></nav>
+
+  <section class="summary" id="summary" aria-live="polite"></section>
+
+  <section class="grid" id="grid" aria-label="Schedule by barber"></section>
+</main>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const COLORS = ["var(--red)", "var(--blue)", "#2f6f5e", "#7a4b94"];
+  const INTERVAL = 1500;
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  let data = null, selected = null, known = null, fresh = new Set(), first = true;
+
+  const mins = (hhmm) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + m; };
+  const hhmm = (iso) => iso.slice(11, 16);
+  const sayTime = (t) => {
+    const [h, m] = t.split(":").map(Number);
+    if (h === 12 && m === 0) return "noon";
+    const suffix = h < 12 ? "AM" : "PM";
+    return m === 0 ? `${h % 12 || 12} ${suffix}` : `${h % 12 || 12}:${String(m).padStart(2, "0")} ${suffix}`;
+  };
+  const hourLabel = (h) => `${h % 12 || 12} ${h < 12 ? "AM" : "PM"}`;
+  const dollars = (c) => (c / 100).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+  const firstName = (a) => a.customer.split(" ")[0];
+
+  function toast(msg) {
+    const t = $("toast"); t.textContent = msg; t.classList.add("visible");
+    clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("visible"), 4000);
+  }
+
+  const signature = (a) => `${a.start}|${a.status}|${a.staff}`;
+
+  function detectChanges() {
+    const current = new Map();
+    for (const d of data.days) for (const a of d.appointments) current.set(a.id, { a, day: d.date });
+    if (known) {
+      let target = null;
+      for (const [id, { a, day }] of current) {
+        const before = known.get(id);
+        if (!before) { fresh.add(id); target = { day, msg: `New: ${firstName(a)}, ${a.service.toLowerCase()} at ${sayTime(hhmm(a.start))}` }; }
+        else if (before !== signature(a)) {
+          fresh.add(id);
+          target = { day, msg: a.status === "cancelled" ? `Cancelled: ${firstName(a)} at ${sayTime(hhmm(a.start))}` : `Rescheduled: ${firstName(a)} to ${sayTime(hhmm(a.start))}` };
+        }
+      }
+      if (target) {
+        selected = target.day;
+        toast(target.msg);
+        setTimeout(() => fresh.clear(), 2600);
+      }
+    }
+    known = new Map([...current].map(([id, { a }]) => [id, signature(a)]));
+  }
+
+  function drawDays() {
+    const nav = $("days"); nav.innerHTML = "";
+    for (const d of data.days) {
+      const b = document.createElement("button");
+      const active = d.appointments.filter(a => a.status === "confirmed").length;
+      b.type = "button"; b.className = "day" + (d.open ? "" : " closed");
+      if (d.appointments.some(a => fresh.has(a.id))) b.classList.add("pulse");
+      b.setAttribute("aria-pressed", String(d.date === selected));
+      const [, m, dd] = d.date.split("-");
+      b.innerHTML = `<span class="name"></span><span class="num">${MONTHS[+m - 1]} ${+dd}</span><span class="count"></span>`;
+      b.querySelector(".name").textContent = d.date === data.now.slice(0, 10) ? "Today" : d.weekday;
+      b.querySelector(".count").textContent = d.open ? (active === 1 ? "1 customer" : `${active} customers`) : "closed";
+      b.addEventListener("click", () => { selected = d.date; draw(); });
+      nav.append(b);
+    }
+  }
+
+  function drawSummary(d) {
+    const active = d.appointments.filter(a => a.status === "confirmed");
+    const revenue = active.reduce((s, a) => s + a.price_cents, 0);
+    const next = active.find(a => a.start >= data.now);
+    const r = $("summary");
+    r.innerHTML = "";
+    const block = (value, label) => { const div = document.createElement("div"); div.innerHTML = "<b></b><span></span>"; div.querySelector("b").textContent = value; div.querySelector("span").textContent = label; r.append(div); };
+    if (!d.open) { block("Closed", "the shop is closed this day"); return; }
+    block(String(active.length), active.length === 1 ? "customer booked" : "customers booked");
+    block(dollars(revenue), "expected revenue");
+    block(next ? `${sayTime(hhmm(next.start))} ${firstName(next)}` : "None", "next up");
+  }
+
+  function drawGrid(d) {
+    const g = $("grid");
+    g.style.setProperty("--columns", data.staff.length);
+    if (!d.open) { g.innerHTML = '<p class="empty-day">The shop is closed this day.</p>'; return; }
+    const opens = Math.floor(mins(d.opens) / 60) * 60, closes = Math.ceil(mins(d.closes) / 60) * 60;
+    // fit the whole working day on screen, without making an hour shorter than 60 px
+    const available = window.innerHeight - g.getBoundingClientRect().top - 60;
+    const px = Math.max(60, Math.min(110, available / ((closes - opens) / 60)));
+    g.style.setProperty("--hour-px", `${px}px`);
+    const y = (m) => ((m - opens) / 60) * px;
+    const height = y(closes);
+
+    const head = document.createElement("div"); head.className = "head";
+    head.innerHTML = "<div></div>";
+    data.staff.forEach((p, i) => { const c = document.createElement("div"); c.innerHTML = `<i style="background:${COLORS[i % COLORS.length]}"></i><span></span>`; c.querySelector("span").textContent = p; head.append(c); });
+
+    const body = document.createElement("div"); body.className = "body";
+    const hours = document.createElement("div"); hours.className = "hours";
+    for (let m = opens; m < closes; m += 60) { const h = document.createElement("div"); h.textContent = hourLabel(m / 60); hours.append(h); }
+    body.append(hours);
+
+    data.staff.forEach((p, i) => {
+      const col = document.createElement("div"); col.className = "staff-col"; col.style.height = `${height}px`;
+      for (let m = opens + 30; m < closes; m += 60) { const l = document.createElement("div"); l.className = "half"; l.style.top = `${y(m)}px`; col.append(l); }
+      d.appointments.filter(a => a.staff === p)
+        .sort((a, b) => (a.status === "cancelled") - (b.status === "cancelled"))
+        .reverse()
+        .forEach(a => {
+          const el = document.createElement("div");
+          el.className = "appt" + (a.status === "cancelled" ? " cancelled" : "") + (fresh.has(a.id) ? " fresh" : "");
+          const start = mins(hhmm(a.start)), end = mins(hhmm(a.end));
+          const h = Math.max(y(end) - y(start) - 4, 26);
+          el.style.top = `${y(start) + 2}px`; el.style.height = `${h}px`;
+          if (h < 44) el.classList.add("short");
+          el.style.background = COLORS[i % COLORS.length];
+          el.innerHTML = "<strong></strong><span></span>";
+          el.querySelector("strong").textContent = a.customer;
+          el.querySelector("span").textContent = `${sayTime(hhmm(a.start))} ${a.service}`;
+          el.title = `${a.customer}, ${a.service}, ${sayTime(hhmm(a.start))} to ${sayTime(hhmm(a.end))}`;
+          col.append(el);
+        });
+      body.append(col);
+    });
+
+    if (d.date === data.now.slice(0, 10)) {
+      const nowMin = mins(data.now.slice(11, 16));
+      if (nowMin >= opens && nowMin <= closes) {
+        const line = document.createElement("div"); line.className = "now"; line.style.top = `${y(nowMin)}px`;
+        line.style.left = "56px"; body.append(line);
+      }
+    }
+    const scroll = g.querySelector(".body")?.scrollTop ?? 0;
+    g.replaceChildren(head, body);
+    body.scrollTop = scroll;
+    const highlight = body.querySelector(".appt.fresh");
+    if (highlight) highlight.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
+  function draw() {
+    if (!data) return;
+    if (!data.days.some(d => d.date === selected)) selected = data.days[0].date;
+    const d = data.days.find(x => x.date === selected);
+    drawDays(); drawSummary(d); drawGrid(d);
+  }
+
+  let last = "";
+  async function refresh() {
+    try {
+      const r = await fetch("/api/week?days=7", { cache: "no-store" });
+      if (!r.ok) throw new Error(r.status);
+      const text = await r.text();
+      $("status").classList.remove("offline"); $("status").textContent = "Live";
+      if (text === last) return;
+      last = text;
+      data = JSON.parse(text);
+      $("business").textContent = data.business;
+      if (first) {
+        // start on the day in the URL, or today, or the next open day if the shop is closed today
+        const open = data.days.find(d => d.open) || data.days[0];
+        selected = new URLSearchParams(location.search).get("date") || (data.days[0].open ? data.days[0].date : open.date);
+        first = false;
+      }
+      detectChanges();
+      draw();
+    } catch (_) {
+      $("status").classList.add("offline"); $("status").textContent = "No connection to the server";
+    } finally {
+      setTimeout(refresh, INTERVAL);
+    }
+  }
+  refresh();
+  let resizing;
+  window.addEventListener("resize", () => { clearTimeout(resizing); resizing = setTimeout(draw, 150); });
+})();
+</script>
+</body>
+</html>

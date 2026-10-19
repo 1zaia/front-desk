@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Front Desk · Voice simulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --wall: #e3e6e4;
+    --frame: #1d2321;
+    --screen: #0d2a31;
+    --screen-2: #12363f;
+    --ring: #35c6d8;
+    --screen-text: #eef6f5;
+    --screen-soft: #8fb3b5;
+    --ink: #1b2422;
+    --ink-soft: #5d6a67;
+    --ok: #2f8f5b;
+    --error: #c8372d;
+    --line: #c9cfcc;
+    --level: 0;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--wall);
+    color: var(--ink);
+    font-family: "Archivo", system-ui, sans-serif;
+    font-variation-settings: "wdth" 100;
+    min-height: 100vh;
+    padding: 24px 16px;
+  }
+  .column { max-width: 760px; margin: 0 auto; display: grid; gap: 18px; }
+
+  /* device */
+  .device {
+    background: var(--frame);
+    border-radius: 28px;
+    padding: 18px;
+    box-shadow: 0 30px 50px -30px rgba(20, 30, 28, .55);
+  }
+  .screen {
+    position: relative;
+    aspect-ratio: 16 / 10;
+    border-radius: 14px;
+    background: radial-gradient(120% 90% at 0% 0%, var(--screen-2), var(--screen) 60%);
+    color: var(--screen-text);
+    padding: clamp(18px, 4vw, 36px);
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    overflow: hidden;
+  }
+  .top { display: flex; justify-content: space-between; align-items: baseline; color: var(--screen-soft); font-size: 15px; }
+  .brand { font-variation-settings: "wdth" 125; font-weight: 700; letter-spacing: .02em; color: var(--screen-text); }
+  .conversation { align-self: center; display: grid; gap: 14px; max-width: 34ch; }
+  .customer { color: var(--screen-soft); font-size: clamp(15px, 2vw, 19px); min-height: 1.3em; }
+  .customer.partial { font-style: italic; }
+  .reply {
+    font-size: clamp(22px, 3.6vw, 34px);
+    line-height: 1.22;
+    font-weight: 500;
+    font-variation-settings: "wdth" 92;
+    text-wrap: pretty;
+  }
+  .reply.error { color: #ffb4ab; font-size: clamp(17px, 2.4vw, 22px); }
+
+  .bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.08); overflow: hidden; position: relative; }
+  .bar::after {
+    content: ""; position: absolute; inset: 0; border-radius: 3px;
+    background: linear-gradient(90deg, transparent, var(--ring), transparent);
+    transform: translateX(-100%); opacity: 0;
+  }
+  /* while listening the bar follows the microphone level, so you can see it is hearing you */
+  .screen[data-state="listening"] .bar::after {
+    opacity: 1; background: var(--ring);
+    transform: scaleX(calc(.08 + var(--level) * .92)); transition: transform 80ms linear;
+  }
+  .screen[data-state="thinking"] .bar::after { opacity: 1; animation: sweep 1s linear infinite; }
+  .screen[data-state="speaking"] .bar::after { opacity: .9; background: var(--ring); transform: none; animation: talk .45s ease-in-out infinite alternate; }
+  @keyframes sweep { to { transform: translateX(100%); } }
+  @keyframes talk { from { transform: scaleX(.55); } to { transform: scaleX(1); } }
+
+  /* controls */
+  .controls { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
+  .mic {
+    width: 56px; height: 56px; border-radius: 50%; border: 0; cursor: pointer;
+    background: var(--frame); color: var(--screen-text); display: grid; place-items: center;
+    position: relative;
+  }
+  .mic:disabled { opacity: .35; cursor: not-allowed; }
+  .mic[aria-pressed="true"] { background: var(--ring); color: var(--frame); }
+  .mic[aria-pressed="true"]::before {
+    content: ""; position: absolute; inset: -6px; border-radius: 50%;
+    border: 3px solid var(--ring); opacity: calc(.25 + var(--level) * .75);
+    transform: scale(calc(1 + var(--level) * .18)); transition: transform 80ms linear, opacity 80ms linear;
+  }
+  .mic svg { width: 24px; height: 24px; }
+  input[type="text"] {
+    font: inherit; font-size: 17px; padding: 14px 16px; border-radius: 12px;
+    border: 1px solid var(--line); background: #fff; color: var(--ink); min-width: 0;
+  }
+  button.send, button.new {
+    font: inherit; font-weight: 600; font-size: 15px; padding: 14px 18px; border-radius: 12px;
+    border: 0; background: var(--frame); color: #fff; cursor: pointer;
+  }
+  button.new { background: transparent; color: var(--ink-soft); padding: 6px 0; font-weight: 500; }
+  :focus-visible { outline: 3px solid var(--ring); outline-offset: 2px; }
+  .hint { font-size: 13px; color: var(--ink-soft); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  kbd { font: inherit; font-size: 12px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: #fff; }
+
+  /* behind the scenes */
+  .behind h2 { font-size: 15px; font-weight: 700; margin: 0 0 8px; font-variation-settings: "wdth" 110; }
+  .behind p.empty { margin: 0; color: var(--ink-soft); font-size: 14px; }
+  ol.calls { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  ol.calls li {
+    display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: baseline;
+    background: #fff; border-radius: 10px; padding: 10px 12px; border-left: 4px solid var(--line);
+    font-size: 14px;
+  }
+  ol.calls li.tool { border-left-color: var(--ok); }
+  ol.calls li.tool.failed { border-left-color: var(--error); }
+  ol.calls li.model { border-left-color: var(--ring); }
+  .name { font-weight: 650; }
+  .ms { font-variant-numeric: tabular-nums; color: var(--ink-soft); }
+  .args { grid-column: 1 / -1; color: var(--ink-soft); font-size: 13px; overflow-wrap: anywhere; }
+  ol.calls li.fresh { animation: arrive .5s ease-out; }
+  @keyframes arrive { from { background: #dff6f8; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::after, *::before { animation: none !important; transition: none !important; }
+  }
+  @media (max-width: 520px) {
+    .controls { grid-template-columns: auto 1fr; }
+    button.send { grid-column: 1 / -1; }
+  }
+</style>
+</head>
+<body>
+<main class="column">
+  <section class="device" aria-label="Voice assistant">
+    <div class="screen" id="screen" data-state="idle">
+      <div class="top"><span class="brand" id="brand">Main Street Barbers</span><span id="clock"></span></div>
+      <div class="conversation" aria-live="polite">
+        <div class="customer" id="customer"></div>
+        <div class="reply" id="reply">Hi! Tap the mic and ask for an appointment.</div>
+      </div>
+      <div class="bar" aria-hidden="true"></div>
+    </div>
+  </section>
+
+  <form class="controls" id="form" autocomplete="off">
+    <button type="button" class="mic" id="mic" aria-pressed="false" aria-label="Talk">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+    </button>
+    <input type="text" id="text" placeholder="Or type: I need a haircut Friday morning" aria-label="What the customer says">
+    <button type="submit" class="send">Send</button>
+  </form>
+  <div class="hint"><span id="hint">Tap the mic and speak, then pause to send. Or hold <kbd>Space</kbd> to talk.</span><button type="button" class="new" id="new">New conversation</button></div>
+
+  <section class="behind" aria-labelledby="behind-title">
+    <h2 id="behind-title">Behind the voice: calls to the MCP server</h2>
+    <p class="empty" id="empty">Every tool the agent uses shows up here, with its arguments and response time.</p>
+    <ol class="calls" id="calls"></ol>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const screen = $("screen"), customer = $("customer"), reply = $("reply");
+  const list = $("calls"), empty = $("empty"), input = $("text"), mic = $("mic"), hint = $("hint");
+  const LANG = "en-US";
+  const DEFAULT_HINT = hint.innerHTML;
+  const GREETING = "Hi! Tap the mic and ask for an appointment.";
+  let session = null;
+  let busy = false;
+
+  // server clock (follows FRONTDESK_NOW, used when recording the demo)
+  const clock = () => fetch("/api/week?days=1", { cache: "no-store" }).then(r => r.json()).then(d => {
+    if (d.business) $("brand").textContent = d.business;
+    if (d.now) {
+      const [h, m] = d.now.slice(11, 16).split(":").map(Number);
+      $("clock").textContent = `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+    }
+  }).catch(() => {});
+  clock(); setInterval(clock, 30000);
+
+  const setState = (s) => { screen.dataset.state = s; };
+  const setHint = (msg) => { if (msg) hint.textContent = msg; else hint.innerHTML = DEFAULT_HINT; };
+
+  // ---------- speech output
+  let voice = null;
+  const pickVoice = () => {
+    const voices = speechSynthesis.getVoices().filter(v => v.lang && v.lang.toLowerCase().startsWith("en"));
+    voice = voices.find(v => /en-us/i.test(v.lang) && /(natural|online|aria|jenny|guy|google us)/i.test(v.name))
+         || voices.find(v => /en-us/i.test(v.lang)) || voices[0] || null;
+  };
+  if ("speechSynthesis" in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+
+  const speak = (sentence) => new Promise((done) => {
+    if (!("speechSynthesis" in window)) return done();
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(sentence);
+    u.lang = LANG; if (voice) u.voice = voice; u.rate = 1.03;
+    // Chrome sometimes never fires onend: a safety timer keeps the conversation from getting stuck
+    const words = sentence.split(/\s+/).length;
+    const safety = setTimeout(() => done(), 3000 + words * 450);
+    u.onend = u.onerror = () => { clearTimeout(safety); done(); };
+    setState("speaking");
+    speechSynthesis.speak(u);
+  });
+
+  // ---------- behind the scenes
+  const formatArgs = (a) => Object.entries(a || {}).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(", ");
+  const entry = (cls, name, ms, detail) => {
+    const li = document.createElement("li");
+    li.className = `${cls} fresh`;
+    li.innerHTML = `<span class="name"></span><span class="ms"></span>${detail ? '<span class="args"></span>' : ""}`;
+    li.querySelector(".name").textContent = name;
+    li.querySelector(".ms").textContent = `${ms} ms`;
+    if (detail) li.querySelector(".args").textContent = detail;
+    return li;
+  };
+  const showRound = (items) => {
+    empty.hidden = true;
+    list.prepend(...items);
+    while (list.children.length > 14) list.lastChild.remove();
+  };
+
+  // ---------- conversation
+  let lastByVoice = false;  // did the last utterance come from the mic? then the conversation stays hands-free
+
+  async function send(sentence, byVoice = false) {
+    sentence = sentence.trim();
+    if (!sentence || busy) return;
+    lastByVoice = byVoice;
+    busy = true;
+    customer.classList.remove("partial");
+    customer.textContent = `“${sentence}”`;
+    reply.classList.remove("error");
+    setState("thinking");
+    let answer = "";
+    try {
+      const r = await fetch("/api/conversation", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: sentence, session })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `Error ${r.status}`);
+      session = data.session;
+      const rehearsal = data.model.startsWith("rehearsal mode");
+      showRound([
+        ...data.calls.map(c => entry(`tool${c.ok ? "" : " failed"}`, `tools/call: ${c.tool}`, c.ms, formatArgs(c.arguments))),
+        entry("model", rehearsal ? "Rehearsal mode: local rules, no Bedrock" : `Amazon Bedrock: ${data.model.replace(/^(us|global)\./, "")}`, data.ms_model, `tools/list in ${data.ms_tools_list} ms, full round trip in ${data.ms_total} ms`),
+      ]);
+      answer = data.reply;
+      reply.textContent = answer;
+      setHint(data.notice || "");
+      await speak(answer);
+    } catch (e) {
+      reply.classList.add("error");
+      reply.textContent = `I couldn't answer: ${e.message}`;
+    } finally {
+      busy = false;
+      setState("idle");
+    }
+    // like Alexa's follow-up mode: if the assistant asked a question, listen again on its own
+    if (lastByVoice && answer.trim().endsWith("?")) setTimeout(() => { if (!busy && !listening) startListening(); }, 350);
+  }
+
+  $("form").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const s = input.value; input.value = "";
+    send(s);
+  });
+
+  $("new").addEventListener("click", () => {
+    stopListening(false);
+    if (session) fetch(`/api/conversation/${session}`, { method: "DELETE" }).catch(() => {});
+    session = null;
+    list.innerHTML = ""; empty.hidden = false;
+    customer.textContent = "";
+    reply.classList.remove("error");
+    reply.textContent = GREETING;
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    setHint("");
+    setState("idle");
+  });
+
+  // ---------- microphone level (shows the mic is really hearing you)
+  const meter = {
+    stream: null, ctx: null, raf: 0,
+    async start() {
+      try {
+        this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+        this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const analyser = this.ctx.createAnalyser();
+        analyser.fftSize = 512;
+        this.ctx.createMediaStreamSource(this.stream).connect(analyser);
+        const buf = new Float32Array(analyser.fftSize);
+        const tick = () => {
+          analyser.getFloatTimeDomainData(buf);
+          let sum = 0; for (const v of buf) sum += v * v;
+          const level = Math.min(1, Math.sqrt(sum / buf.length) * 6);
+          document.documentElement.style.setProperty("--level", level.toFixed(3));
+          this.raf = requestAnimationFrame(tick);
+        };
+        tick();
+      } catch (_) { /* the level is only visual; recognition still works without it */ }
+    },
+    stop() {
+      cancelAnimationFrame(this.raf);
+      document.documentElement.style.setProperty("--level", "0");
+      if (this.stream) this.stream.getTracks().forEach(t => t.stop());
+      if (this.ctx) this.ctx.close().catch(() => {});
+      this.stream = this.ctx = null;
+    },
+  };
+
+  // ---------- speech recognition
+  // Hands-free: continuous recognition, and the turn ends after a short pause (not at the first
+  // pause Chrome detects). If the browser stops the recognizer on its own (silence, network hiccup),
+  // it is restarted and what was already heard is kept. Push-to-talk: hold Space.
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const PAUSE_MS = 1300;        // silence after speech that ends the turn
+  const NOTHING_HEARD_MS = 9000;
+  const MAX_RESTARTS = 6;
+  let rec = null, listening = false, pushToTalk = false;
+  let kept = "", finalText = "", interimText = "", restarts = 0;
+  let pauseTimer = 0, nothingTimer = 0, startTimer = 0;
+
+  const heard = () => [kept, finalText, interimText].join(" ").replace(/\s+/g, " ").trim();
+  const showHeard = () => {
+    const h = heard();
+    customer.classList.toggle("partial", true);
+    customer.textContent = h || "Listening…";
+  };
+
+  const noVoice = (msg) => { mic.disabled = true; mic.title = msg; setHint(msg); };
+  if (!Recognition) {
+    noVoice("This browser can't recognize speech. Open it in Google Chrome or Microsoft Edge, or type instead.");
+  } else if (navigator.brave) {
+    // Brave exposes the API but blocks the recognition service: the mic opens and closes with a "network" error.
+    noVoice("Brave doesn't support speech recognition. Open it in Google Chrome or Microsoft Edge, or type instead.");
+  }
+
+  function openRecognizer() {
+    const r = new Recognition();
+    r.lang = LANG; r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
+    r.onstart = () => { if (r === rec) clearTimeout(startTimer); };
+    r.onresult = (e) => {
+      if (r !== rec) return;
+      let fin = "", int = "";
+      for (let i = 0; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) fin += t + " "; else int += t + " ";
+      }
+      finalText = fin; interimText = int;
+      showHeard();
+      clearTimeout(nothingTimer);
+      if (!pushToTalk && heard()) { clearTimeout(pauseTimer); pauseTimer = setTimeout(() => stopListening(true), PAUSE_MS); }
+    };
+    r.onerror = (e) => {
+      if (r !== rec) return;
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") { setHint("Allow microphone access in the browser to talk."); stopListening(false); }
+      else if (e.error === "audio-capture") { setHint("No microphone found. Check your input device, or type instead."); stopListening(false); }
+      else if (e.error === "network" && restarts >= 2) { setHint("The browser's speech service isn't responding. Use Chrome or Edge, or type instead."); stopListening(false); }
+      // "no-speech", "aborted" and one-off "network" errors are handled by the restart in onend
+    };
+    r.onend = () => {
+      if (r !== rec || !listening) return;
+      // the browser stopped by itself: keep what was heard and listen again
+      kept = heard(); finalText = ""; interimText = "";
+      if (restarts++ < MAX_RESTARTS) setTimeout(() => { if (listening && r === rec) launch(); }, 120);
+      else stopListening(Boolean(kept));
+    };
+    return r;
+  }
+
+  function launch() {
+    rec = openRecognizer();
+    clearTimeout(startTimer);
+    // watchdog: if the recognizer never starts, try once more instead of sitting there silently
+    startTimer = setTimeout(() => { if (listening) { try { rec.abort(); } catch (_) {} } }, 3000);
+    try { rec.start(); } catch (_) { setTimeout(() => { if (listening) launch(); }, 250); }
+  }
+
+  function startListening(ptt = false) {
+    if (!Recognition || mic.disabled || busy || listening) return;
+    if ("speechSynthesis" in window) speechSynthesis.cancel();  // never listen to our own voice
+    listening = true; pushToTalk = ptt;
+    kept = finalText = interimText = ""; restarts = 0;
+    mic.setAttribute("aria-pressed", "true");
+    setState("listening");
+    setHint(ptt ? "Listening… release Space to send." : "Listening… pause when you're done. Tap the mic to send now.");
+    showHeard();
+    meter.start();
+    launch();
+    clearTimeout(nothingTimer);
+    nothingTimer = setTimeout(() => { if (listening && !heard()) { stopListening(false); setHint("I didn't hear anything. Tap the mic and try again."); } }, NOTHING_HEARD_MS);
+  }
+
+  function stopListening(sendIt) {
+    if (!listening) return;
+    listening = false;
+    clearTimeout(pauseTimer); clearTimeout(nothingTimer); clearTimeout(startTimer);
+    const sentence = heard();
+    const r = rec; rec = null;
+    try { r && r.abort(); } catch (_) {}
+    meter.stop();
+    mic.setAttribute("aria-pressed", "false");
+    if (!busy) setState("idle");
+    if (sendIt && sentence) { setHint(""); send(sentence, true); }
+    else if (!sentence) customer.textContent = "";
+  }
+
+  mic.addEventListener("click", () => { if (listening) stopListening(true); else startListening(false); });
+  document.addEventListener("keydown", (ev) => {
+    if (document.activeElement === input) return;
+    if (ev.code === "Space" && !ev.repeat) {
+      ev.preventDefault();
+      if (!listening) startListening(true);
+      else if (!pushToTalk) {  // already listening hands-free (e.g. follow-up): holding Space turns it into push-to-talk
+        pushToTalk = true; clearTimeout(pauseTimer);
+        setHint("Listening… release Space to send.");
+      }
+    }
+    if (ev.code === "Escape" && listening) { stopListening(false); setHint(""); }
+  });
+  document.addEventListener("keyup", (ev) => {
+    if (ev.code !== "Space" || document.activeElement === input || !listening || !pushToTalk) return;
+    ev.preventDefault();
+    // a short grace period lets the last words arrive from the recognizer
+    setTimeout(() => stopListening(true), 450);
+  });
+  window.addEventListener("blur", () => { if (listening && pushToTalk) stopListening(true); });
+})();
+</script>
+</body>
+</html>

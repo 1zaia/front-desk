@@ -1,63 +1,63 @@
 # Friction log
 
-## MCP Python SDK 2.x renomeou FastMCP sem aviso nos tutoriais
-- **Tarefa:** criar o esqueleto do servidor MCP em Python.
-- **Passos:** `pip install mcp` e `from mcp.server.fastmcp import FastMCP`, como na maioria dos tutoriais.
-- **Esperado:** importar o FastMCP.
-- **Aconteceu:** `ModuleNotFoundError`. Na versão 2.x a classe virou `mcp.server.MCPServer`, e opções como `stateless_http` e `json_response` saíram do construtor para `streamable_http_app()`.
-- **Gravidade:** média
-- **Solução usada:** ler o código do pacote instalado e migrar para `MCPServer`.
-- **Sugestão:** os recursos do hackathon poderiam fixar uma versão do SDK e trazer um exemplo mínimo atualizado de servidor Streamable HTTP.
+## MCP Python SDK 2.x renamed FastMCP, and the tutorials don't say so
+- **Task:** create the MCP server skeleton in Python.
+- **Steps:** `pip install mcp` and `from mcp.server.fastmcp import FastMCP`, as most tutorials show.
+- **Expected:** FastMCP imports.
+- **What happened:** `ModuleNotFoundError`. In 2.x the class became `mcp.server.MCPServer`, and options like `stateless_http` and `json_response` moved from the constructor to `streamable_http_app()`.
+- **Severity:** medium
+- **Workaround:** read the installed package's code and migrate to `MCPServer`.
+- **Suggestion:** the hackathon resources could pin an SDK version and ship a minimal, up-to-date Streamable HTTP server example.
 
-## Retorno em dict não vira structuredContent
-- **Tarefa:** devolver a resposta da ferramenta em formato estruturado.
-- **Esperado:** `structuredContent` preenchido ao retornar um `dict`.
-- **Aconteceu:** veio só como texto; `structuredContent` ficou vazio.
-- **Gravidade:** baixa
-- **Solução usada:** anotar o retorno como `dict[str, Any]` em vez de `dict`. Com isso o SDK gera `outputSchema` e preenche `structuredContent`; com `structured_output=True` e `-> dict` puro ele recusa a função ("return type dict is not serializable for structured output").
-- **Sugestão:** documentar a diferença entre `dict` e `dict[str, Any]` no retorno das ferramentas, ou tratar os dois do mesmo jeito.
+## Returning `dict` does not produce structuredContent
+- **Task:** return the tool result in structured form.
+- **Expected:** `structuredContent` filled in when the tool returns a `dict`.
+- **What happened:** it came back as text only; `structuredContent` was empty.
+- **Severity:** low
+- **Workaround:** annotate the return type as `dict[str, Any]` instead of `dict`. With that, the SDK generates an `outputSchema` and fills `structuredContent`; with `structured_output=True` and a bare `-> dict` it rejects the function ("return type dict is not serializable for structured output").
+- **Suggestion:** document the difference between `dict` and `dict[str, Any]` as a tool return type, or treat both the same way.
 
-## Servidor MCP responde 421 "Invalid Host header" atrás de um proxy
-- **Tarefa:** preparar o servidor para rodar atrás do Caddy (HTTPS) num domínio público.
-- **Passos:** subir o servidor em `127.0.0.1:8000` com `streamable_http_app()` e mandar um `initialize` com `Host: <dominio-publico>`.
-- **Esperado:** `200`, como em `localhost`.
-- **Aconteceu:** `421 Invalid Host header`. O SDK liga sozinho a proteção contra DNS rebinding quando o host é `127.0.0.1` e só aceita `localhost`; nada avisa isso na documentação de deploy.
-- **Gravidade:** média (o endpoint publicado não responderia ao Alexa+ nem ao MCP Inspector)
-- **Solução usada:** passar `TransportSecuritySettings` com o domínio público em `allowed_hosts` (variável `FRONTDESK_HOSTS`), mantendo a proteção ligada. Coberto por teste.
-- **Sugestão:** citar a proteção de Host no guia de deploy do SDK e na página de requisitos do endpoint do Alexa+, com um exemplo atrás de proxy.
+## MCP server answers 421 "Invalid Host header" behind a proxy
+- **Task:** get the server ready to run behind Caddy (HTTPS) on a public domain.
+- **Steps:** run the server on `127.0.0.1:8000` with `streamable_http_app()` and send an `initialize` with `Host: <public-domain>`.
+- **Expected:** `200`, as with `localhost`.
+- **What happened:** `421 Invalid Host header`. The SDK turns on DNS rebinding protection by itself when the host is `127.0.0.1` and only accepts `localhost`; the deployment docs don't mention it.
+- **Severity:** medium (the published endpoint would not answer Alexa+ or the MCP Inspector)
+- **Workaround:** pass `TransportSecuritySettings` with the public domain in `allowed_hosts` (the `FRONTDESK_HOSTS` variable), keeping the protection on. Covered by a test.
+- **Suggestion:** mention the Host protection in the SDK deployment guide and on the Alexa+ endpoint requirements page, with an example behind a proxy.
 
-## `aws login` não abriu o navegador e expirou em silêncio
-- **Tarefa:** autenticar a AWS CLI no Windows 11 com `aws login` (Agent Toolkit for AWS, passo 3).
-- **Passos:** rodar `aws login --region us-east-2 --profile juan` no PowerShell.
-- **Esperado:** abrir a página de login no navegador padrão.
-- **Aconteceu:** a CLI disse que tentaria abrir o navegador, mas nenhuma aba abriu. Depois de 10 minutos saiu com código 255, sem mensagem explicando que o tempo tinha acabado.
-- **Gravidade:** média
-- **Solução usada:** capturar o link impresso pela CLI e abri-lo manualmente no navegador; a página "Choose AWS sessions" reaproveitou a sessão do console.
-- **Sugestão:** avisar quando o navegador não abrir, mostrar uma contagem do tempo restante e explicar o código 255 como tempo esgotado.
+## `aws login` didn't open the browser and timed out silently
+- **Task:** authenticate the AWS CLI on Windows 11 with `aws login` (Agent Toolkit for AWS, step 3).
+- **Steps:** run `aws login --region us-east-2 --profile juan` in PowerShell.
+- **Expected:** the sign-in page opens in the default browser.
+- **What happened:** the CLI said it would try to open the browser, but no tab opened. After 10 minutes it exited with code 255, with no message saying the time had run out.
+- **Severity:** medium
+- **Workaround:** copy the link printed by the CLI and open it manually; the "Choose AWS sessions" page reused the console session.
+- **Suggestion:** warn when the browser doesn't open, show a countdown, and explain code 255 as a timeout.
 
-## `aws agent-toolkit list-available-skills` quebra com erro de codificação no Windows
-- **Tarefa:** verificar o Agent Toolkit (passo 6 do setup).
-- **Passos:** capturar a saída do comando no PowerShell 5.1 (`$x = aws agent-toolkit list-available-skills ...`).
-- **Esperado:** JSON com o catálogo de skills.
-- **Aconteceu:** `aws: [ERROR]: 'charmap' codec can't encode character '\u2192'`, código 255. A configuração em si tinha funcionado.
-- **Gravidade:** média (parece falha de instalação, mas não é)
-- **Solução usada:** definir `PYTHONUTF8=1` e `PYTHONIOENCODING=utf-8` antes do comando; retornou 114 skills.
-- **Sugestão:** a CLI forçar UTF-8 na saída ou trocar caracteres não ASCII (como a seta) nas descrições.
+## `aws agent-toolkit list-available-skills` breaks with an encoding error on Windows
+- **Task:** verify the Agent Toolkit (setup step 6).
+- **Steps:** capture the command output in PowerShell 5.1 (`$x = aws agent-toolkit list-available-skills ...`).
+- **Expected:** JSON with the skills catalog.
+- **What happened:** `aws: [ERROR]: 'charmap' codec can't encode character '→'`, exit code 255. The setup itself had worked.
+- **Severity:** medium (looks like a failed install, but isn't)
+- **Workaround:** set `PYTHONUTF8=1` and `PYTHONIOENCODING=utf-8` before the command; it returned 114 skills.
+- **Suggestion:** force UTF-8 output in the CLI, or replace non-ASCII characters (like the arrow) in the descriptions.
 
-## Credencial do `aws login` não funciona no boto3 sem o extra `crt`
-- **Tarefa:** chamar o Amazon Nova pela Converse API (boto3) a partir do servidor do Front Desk, usando o perfil criado com `aws login` na nova experiência da AWS.
-- **Passos:** `pip install boto3` (1.40+), `aws login --region us-east-2 --profile juan`, `$env:AWS_PROFILE = "juan"`, chamar `bedrock-runtime.converse`.
-- **Esperado:** o boto3 usar a mesma credencial que a AWS CLI já usa.
-- **Aconteceu:** `MissingDependencyException: Missing Dependency: Using the login credential provider requires an additional dependency. You will need to pip install "botocore[crt]" before proceeding.` A CLI funciona, mas o SDK não, e nada no fluxo do `aws login` nem no Agent Toolkit avisa que o SDK em Python precisa do extra. No nosso servidor o erro ainda veio embrulhado num `ExceptionGroup` do cliente MCP, o que escondeu a causa na primeira tentativa.
-- **Gravidade:** média (bloqueia a primeira chamada ao Bedrock pelo código; a mensagem final é clara)
-- **Solução usada:** trocar `boto3` por `boto3[crt]` no `requirements.txt`.
-- **Sugestão:** instalar o `awscrt` como dependência padrão do botocore quando o perfil usa `login_session`, ou o `aws login` avisar ao terminar: "para usar esta credencial em SDKs Python, instale botocore[crt]". Vale incluir isso no guia da nova experiência e nas skills do Agent Toolkit.
+## `aws login` credentials don't work in boto3 without the `crt` extra
+- **Task:** call Amazon Nova through the Converse API (boto3) from the Front Desk server, using the profile created with `aws login` in the new AWS experience.
+- **Steps:** `pip install boto3` (1.40+), `aws login --region us-east-2 --profile juan`, `$env:AWS_PROFILE = "juan"`, call `bedrock-runtime.converse`.
+- **Expected:** boto3 uses the same credentials the AWS CLI already uses.
+- **What happened:** `MissingDependencyException: Missing Dependency: Using the login credential provider requires an additional dependency. You will need to pip install "botocore[crt]" before proceeding.` The CLI works but the SDK doesn't, and nothing in the `aws login` flow or the Agent Toolkit says the Python SDK needs the extra. In our server the error also came wrapped in an `ExceptionGroup` from the MCP client, which hid the cause on the first attempt.
+- **Severity:** medium (blocks the first Bedrock call from code; the final message is clear)
+- **Workaround:** use `boto3[crt]` instead of `boto3` in `requirements.txt`.
+- **Suggestion:** install `awscrt` as a default botocore dependency when the profile uses `login_session`, or have `aws login` say when it finishes: "to use these credentials in Python SDKs, install botocore[crt]". Worth adding to the new-experience guide and the Agent Toolkit skills.
 
-## Conta nova recebe "Too many tokens per day" na primeira chamada ao Amazon Nova
-- **Tarefa:** primeira chamada ao Amazon Nova Lite pela Converse API (boto3), Região us-east-2, perfil de inferência `us.amazon.nova-lite-v1:0`, conta criada pela nova experiência da AWS (plano Free, US$ 100 de crédito).
-- **Passos:** `aws login --region us-east-2 --profile juan`; subir o servidor com `AWS_PROFILE=juan`; mandar uma única frase curta ("segunda-feira, meio-dia") pelo simulador.
-- **Esperado:** resposta do modelo; o uso total da conta até ali era zero.
-- **Aconteceu:** `ThrottlingException: Too many tokens per day, please wait before trying again` já na primeira chamada, com 3 novas tentativas automáticas do SDK, todas iguais. Nenhuma mensagem diz qual cota é, qual o valor aplicado nem como pedir aumento. Confirmado com `aws service-quotas list-service-quotas --service-code bedrock --region us-east-2`: todas as cotas "tokens per day" dos modelos Nova (Nova Lite, Micro, Pro, Premier, Nova 2 Lite, Nova 2 Omni, Nova 2 Pro Preview e os perfis globais) aparecem com valor **0,0** na conta. Pior: no Service Quotas essas cotas aparecem como **não ajustáveis**, com valor padrão da AWS de 5,76 bilhões de tokens por dia (11,52 bilhões no perfil global do Nova 2 Lite) e valor aplicado 0, então nem dá para pedir aumento por lá (`request-service-quota-increase`). Relatos no re:Post descrevem o mesmo em contas novas e a solução lá é abrir chamado no suporte.
-- **Gravidade:** bloqueante para o mini desafio AWS Builder (o agente no Bedrock não roda)
-- **Solução usada:** o agente passou a tentar outros modelos Nova em sequência quando um está sem cota (Nova Lite, Nova Micro, Nova 2 Lite) e ganhou um "modo ensaio" sem Bedrock para testar o resto da demo; chamado aberto no AWS Support (caso 179236335500169, 18/10) pedindo a cota. O deploy na EC2 confirmou que o papel IAM chega ao Bedrock: o erro é de cota, não de permissão.
-- **Sugestão:** contas novas, ainda mais as do plano Free com crédito, deveriam sair com uma cota diária mínima utilizável para os modelos Nova; a mensagem de erro deveria citar o nome da cota no Service Quotas e o link para pedir aumento; e o Playground/console do Bedrock deveria mostrar "sua cota diária é 0" antes de o desenvolvedor escrever código.
+## New account gets "Too many tokens per day" on the very first Amazon Nova call
+- **Task:** first call to Amazon Nova Lite through the Converse API (boto3), Region us-east-2, inference profile `us.amazon.nova-lite-v1:0`, account created through the new AWS experience (Free plan, US$100 in credits).
+- **Steps:** `aws login --region us-east-2 --profile juan`; start the server with `AWS_PROFILE=juan`; send a single short sentence through the simulator.
+- **Expected:** a model response; the account's total usage so far was zero.
+- **What happened:** `ThrottlingException: Too many tokens per day, please wait before trying again` on the very first call, with 3 automatic SDK retries, all the same. No message says which quota it is, what the applied value is, or how to request more. Confirmed with `aws service-quotas list-service-quotas --service-code bedrock --region us-east-2`: every "tokens per day" quota for the Nova models (Nova Lite, Micro, Pro, Premier, Nova 2 Lite, Nova 2 Omni, Nova 2 Pro Preview and the global profiles) shows an applied value of **0.0** on the account. Worse: in Service Quotas these quotas are marked **not adjustable**, with an AWS default of 5.76 billion tokens per day (11.52 billion for the Nova 2 Lite global profile) and an applied value of 0, so you can't even request an increase there (`request-service-quota-increase`). re:Post threads describe the same thing on new accounts, and the answer there is to open a support case.
+- **Severity:** blocking for the AWS Builder mini challenge (the agent on Bedrock can't run)
+- **Workaround:** the agent now tries other Nova models in sequence when one has no quota (Nova Lite, Nova Micro, Nova 2 Lite) and gained a "rehearsal mode" without Bedrock to test the rest of the demo; a case was opened with AWS Support (case 179236335500169, October 18) asking for the quota. The EC2 deployment confirmed the IAM role reaches Bedrock: the error is about quota, not permissions.
+- **Suggestion:** new accounts, especially Free plan accounts with credits, should come with a minimum usable daily quota for the Nova models; the error message should name the Service Quotas quota and link to the increase request; and the Bedrock Playground/console should show "your daily quota is 0" before the developer writes any code.
