@@ -37,9 +37,32 @@ CREATE TABLE IF NOT EXISTS appointments (
     start TEXT NOT NULL,  -- local ISO time, e.g. 2026-10-23T09:00
     end TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'confirmed',
+    source TEXT NOT NULL DEFAULT 'assistant',  -- assistant | waitlist | history
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_appointments_start ON appointments(start);
+-- customers waiting for a slot to open up; filled automatically when someone cancels
+CREATE TABLE IF NOT EXISTS waitlist (
+    id INTEGER PRIMARY KEY,
+    customer TEXT NOT NULL,
+    service_id INTEGER NOT NULL REFERENCES services(id),
+    staff_id INTEGER REFERENCES staff(id),  -- NULL = any barber
+    day TEXT NOT NULL,                      -- YYYY-MM-DD
+    earliest TEXT NOT NULL,                 -- HH:MM, first acceptable start
+    latest TEXT NOT NULL,                   -- HH:MM, last acceptable start
+    status TEXT NOT NULL DEFAULT 'waiting', -- waiting | booked
+    appointment_id INTEGER REFERENCES appointments(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+-- time the owner takes off a barber's schedule (day off, lunch, errands)
+CREATE TABLE IF NOT EXISTS blocks (
+    id INTEGER PRIMARY KEY,
+    staff_id INTEGER NOT NULL REFERENCES staff(id),
+    start TEXT NOT NULL,
+    end TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 # Fictional barbershop used in the demo
@@ -70,6 +93,9 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(appointments)")}
+    if "source" not in columns:  # databases created before the waitlist existed
+        conn.execute("ALTER TABLE appointments ADD COLUMN source TEXT NOT NULL DEFAULT 'assistant'")
     if conn.execute("SELECT COUNT(*) FROM business").fetchone()[0] == 0:
         conn.execute("INSERT INTO business (id, name, timezone) VALUES (1, ?, ?)", SEED_BUSINESS)
         conn.executemany("INSERT INTO services (name, duration_min, price_cents) VALUES (?, ?, ?)", SEED_SERVICES)

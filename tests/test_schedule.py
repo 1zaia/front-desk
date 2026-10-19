@@ -217,3 +217,73 @@ def test_seed_demo_only_once(conn):
     assert n > 0
     schedule.seed_demo(conn, TODAY)
     assert conn.execute("SELECT COUNT(*) FROM appointments").fetchone()[0] == n
+
+
+# ------------------------------------------------------------ waitlist
+
+def test_waitlist_books_the_freed_slot_first(conn):
+    s = haircut(conn)
+    friday = datetime(2026, 10, 23, 10, 0)
+    a = schedule.book(conn, "Ana", s, friday, NOW)
+    schedule.book(conn, "Bea", s, friday, NOW)
+    entry = schedule.add_to_waitlist(conn, "sam torres", s, friday.date(), NOW, period="morning")
+    assert entry["customer"] == "Sam Torres" and entry["earliest"] == "09:00" and entry["latest"] == "12:00"
+    schedule.cancel(conn, a["id"])
+    filled = schedule.fill_from_waitlist(conn, friday.date(), NOW, freed=friday)
+    assert [(x["customer"], x["start"], x["source"]) for x in filled] == [("Sam Torres", "2026-10-23T10:00", "waitlist")]
+    assert schedule.waitlist_on(conn, friday.date())[0]["status"] == "booked"
+    assert schedule.fill_from_waitlist(conn, friday.date(), NOW) == []  # nobody left waiting
+
+
+def test_waitlist_for_an_exact_time_waits_for_that_time(conn):
+    s = haircut(conn)
+    friday = date(2026, 10, 23)
+    marcus, diego = schedule.find_staff(conn, "Marcus"), schedule.find_staff(conn, "Diego")
+    schedule.book(conn, "Ana", s, datetime(2026, 10, 23, 10, 0), NOW, marcus)
+    schedule.book(conn, "Bea", s, datetime(2026, 10, 23, 10, 0), NOW, diego)
+    later = schedule.book(conn, "Cal", s, datetime(2026, 10, 23, 15, 0), NOW, marcus)
+    schedule.add_to_waitlist(conn, "Sam", s, friday, NOW, at=time(10, 0))
+    schedule.cancel(conn, later["id"])
+    assert schedule.fill_from_waitlist(conn, friday, NOW) == []  # 3 PM opened, but Sam only wants 10 AM
+
+
+def test_waitlist_on_a_closed_day(conn):
+    with pytest.raises(BookingError, match="closed"):
+        schedule.add_to_waitlist(conn, "Sam", haircut(conn), date(2026, 10, 25), NOW)
+
+
+# ------------------------------------------------------------ returning customers
+
+def test_customer_profile(conn):
+    schedule.seed_demo(conn, TODAY)
+    p = schedule.customer_profile(conn, "chris", NOW)
+    assert p["customer"] == "Chris Miller" and p["visits"] == 3
+    assert p["usual_service"] == "Haircut" and p["usual_barber"] == "Marcus"
+    assert p["upcoming"] and p["upcoming"][0]["start"].startswith("2026-10-19T10:00")
+    assert schedule.customer_profile(conn, "Nobody", NOW) is None
+    assert schedule.customer_profile(conn, "an", NOW) is None  # matches whole words, not pieces of names
+    assert schedule.is_usual("The usual") and schedule.is_usual("same as last time") and not schedule.is_usual("haircut")
+
+
+# ------------------------------------------------------------ owner blocks
+
+def test_block_time_removes_slots_and_reports_conflicts(conn):
+    diego = schedule.find_staff(conn, "Diego")
+    thursday = date(2026, 10, 22)
+    schedule.book(conn, "Tom", haircut(conn), datetime(2026, 10, 22, 14, 0), NOW, diego)
+    block = schedule.block_time(conn, diego, thursday, NOW, period="afternoon", reason="dentist")
+    assert (block["start"], block["end"]) == ("2026-10-22T12:00", "2026-10-22T17:00")
+    assert [a["customer"] for a in block["conflicts"]] == ["Tom"]
+    slots = schedule.open_slots(conn, thursday, haircut(conn), NOW, "afternoon", diego)
+    assert slots == []
+    assert schedule.blocks_on(conn, thursday)[0]["reason"] == "dentist"
+    with pytest.raises(BookingError, match="already taken"):
+        schedule.book(conn, "Ana", haircut(conn), datetime(2026, 10, 22, 15, 0), NOW, diego)
+
+
+def test_block_time_with_explicit_hours(conn):
+    marcus = schedule.find_staff(conn, "Marcus")
+    block = schedule.block_time(conn, marcus, date(2026, 10, 23), NOW, start=time(13, 0), end=time(15, 0))
+    assert (block["start"], block["end"], block["conflicts"]) == ("2026-10-23T13:00", "2026-10-23T15:00", [])
+    with pytest.raises(BookingError, match="after the start"):
+        schedule.block_time(conn, marcus, date(2026, 10, 23), NOW, start=time(15, 0), end=time(13, 0))

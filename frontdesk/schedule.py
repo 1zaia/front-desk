@@ -267,16 +267,21 @@ def hours_for(conn: sqlite3.Connection, d: date) -> tuple[time, time] | None:
 
 
 def _busy(conn: sqlite3.Connection, staff_id: int, d: date, ignore_id: int | None = None):
+    """Busy intervals of a barber on a day: confirmed appointments plus time the owner blocked."""
     rows = conn.execute(
         "SELECT id, start, end FROM appointments WHERE staff_id = ? AND status = 'confirmed' "
         "AND substr(start, 1, 10) = ?",
         (staff_id, d.isoformat()),
     ).fetchall()
-    return [
+    busy = [
         (datetime.fromisoformat(r["start"]), datetime.fromisoformat(r["end"]))
         for r in rows
         if r["id"] != ignore_id
     ]
+    blocks = conn.execute(
+        "SELECT start, end FROM blocks WHERE staff_id = ? AND substr(start, 1, 10) = ?", (staff_id, d.isoformat())
+    ).fetchall()
+    return busy + [(datetime.fromisoformat(b["start"]), datetime.fromisoformat(b["end"])) for b in blocks]
 
 
 def _is_free(conn, staff_id: int, start: datetime, end: datetime, ignore_id: int | None = None) -> bool:
@@ -340,6 +345,7 @@ def book(
     start: datetime,
     moment: datetime,
     staff: Staff | None = None,
+    source: str = "assistant",
 ) -> dict:
     customer = " ".join((customer or "").split()).title()
     if not customer:
@@ -352,8 +358,8 @@ def book(
         who = f" with {staff.name}" if staff else ""
         raise BookingError(f"Sorry, {say_time(start.time())}{who} is already taken.")
     cur = conn.execute(
-        "INSERT INTO appointments (customer, service_id, staff_id, start, end) VALUES (?, ?, ?, ?, ?)",
-        (customer, service.id, chosen.id, start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")),
+        "INSERT INTO appointments (customer, service_id, staff_id, start, end, source) VALUES (?, ?, ?, ?, ?, ?)",
+        (customer, service.id, chosen.id, start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes"), source),
     )
     conn.commit()
     return get_appointment(conn, cur.lastrowid)
@@ -361,7 +367,7 @@ def book(
 
 def get_appointment(conn: sqlite3.Connection, appt_id: int) -> dict:
     r = conn.execute(
-        "SELECT a.id, a.customer, a.start, a.end, a.status, s.name AS service, s.price_cents, p.name AS staff "
+        "SELECT a.id, a.customer, a.start, a.end, a.status, a.source, s.name AS service, s.price_cents, p.name AS staff "
         "FROM appointments a JOIN services s ON s.id = a.service_id JOIN staff p ON p.id = a.staff_id "
         "WHERE a.id = ?",
         (appt_id,),
@@ -430,6 +436,8 @@ def daily_summary(conn: sqlite3.Connection, d: date, moment: datetime) -> dict:
     return {
         "date": d.isoformat(),
         "open": window is not None,
+        "waitlist": waitlist_on(conn, d),
+        "blocks": blocks_on(conn, d),
         "total_customers": len(appts),
         "expected_revenue_cents": revenue,
         "next": upcoming[0] if upcoming else None,
@@ -443,6 +451,180 @@ def appointments_on(conn: sqlite3.Connection, d: date) -> list[dict]:
         "SELECT id FROM appointments WHERE substr(start, 1, 10) = ? ORDER BY start", (d.isoformat(),)
     ).fetchall()
     return [get_appointment(conn, r["id"]) for r in rows]
+
+
+# ---------------------------------------------------------------- waitlist
+
+def add_to_waitlist(
+    conn: sqlite3.Connection,
+    customer: str,
+    service: Service,
+    d: date,
+    moment: datetime,
+    at: time | None = None,
+    period: str | None = None,
+    staff: Staff | None = None,
+) -> dict:
+    """Puts a customer on the waitlist for a day, a period of the day or one specific start time."""
+    customer = " ".join((customer or "").split()).title()
+    if not customer:
+        raise BookingError("Can I get your name for the waitlist?")
+    window = hours_for(conn, d)
+    if window is None:
+        raise BookingError(f"We're closed {say_date_on(d, moment.date())}, so there's no waitlist that day.")
+    if d < moment.date():
+        raise BookingError("That day has already passed.")
+    opens, closes = window
+    if at:
+        earliest = latest = at
+    else:
+        p = PERIOD_ALIASES.get(normalize(period or ""), normalize(period or ""))
+        earliest, latest = PERIODS.get(p, (opens, closes))
+        earliest, latest = max(earliest, opens), min(latest, closes)
+    cur = conn.execute(
+        "INSERT INTO waitlist (customer, service_id, staff_id, day, earliest, latest) VALUES (?, ?, ?, ?, ?, ?)",
+        (customer, service.id, staff.id if staff else None, d.isoformat(), earliest.strftime("%H:%M"), latest.strftime("%H:%M")),
+    )
+    conn.commit()
+    return _waitlist_entry(conn, cur.lastrowid)
+
+
+def _waitlist_entry(conn: sqlite3.Connection, entry_id: int) -> dict:
+    r = conn.execute(
+        "SELECT w.id, w.customer, w.day, w.earliest, w.latest, w.status, w.appointment_id, s.name AS service, "
+        "p.name AS staff FROM waitlist w JOIN services s ON s.id = w.service_id LEFT JOIN staff p ON p.id = w.staff_id "
+        "WHERE w.id = ?",
+        (entry_id,),
+    ).fetchone()
+    return dict(r)
+
+
+def waitlist_on(conn: sqlite3.Connection, d: date, status: str | None = None) -> list[dict]:
+    rows = conn.execute("SELECT id, status FROM waitlist WHERE day = ? ORDER BY id", (d.isoformat(),)).fetchall()
+    return [_waitlist_entry(conn, r["id"]) for r in rows if status is None or r["status"] == status]
+
+
+def fill_from_waitlist(conn: sqlite3.Connection, d: date, moment: datetime, freed: datetime | None = None) -> list[dict]:
+    """After a cancellation, books waiting customers (first come, first served) into the time that opened up.
+
+    The freed start time is tried first, then any other start in the customer's window.
+    Returns the new appointments.
+    """
+    booked = []
+    for entry in waitlist_on(conn, d, status="waiting"):
+        service = find_service(conn, entry["service"])
+        staff = find_staff(conn, entry["staff"]) if entry["staff"] else None
+        earliest, latest = time.fromisoformat(entry["earliest"]), time.fromisoformat(entry["latest"])
+        options = [s for s in open_slots(conn, d, service, moment, staff=staff) if earliest <= time.fromisoformat(s["time"]) <= latest]
+        if not options:
+            continue
+        if freed is not None:
+            options.sort(key=lambda s: (s["time"] != freed.strftime("%H:%M"), s["time"]))
+        choice = options[0]
+        appt = book(conn, entry["customer"], service, datetime.combine(d, time.fromisoformat(choice["time"])), moment,
+                    find_staff(conn, choice["staff"]), source="waitlist")
+        conn.execute("UPDATE waitlist SET status = 'booked', appointment_id = ? WHERE id = ?", (appt["id"], entry["id"]))
+        conn.commit()
+        booked.append(appt)
+    return booked
+
+
+# ---------------------------------------------------------------- returning customers
+
+USUAL = {"usual", "the usual", "my usual", "same as last time", "same as usual", "the same", "same thing", "same again"}
+
+
+def is_usual(service: str | None) -> bool:
+    return normalize(service or "").strip(" .!") in USUAL
+
+
+def customer_profile(conn: sqlite3.Connection, customer: str, moment: datetime) -> dict | None:
+    """Visit history of a customer: usual service and barber, last visit and upcoming appointments."""
+    target = normalize(customer)
+    if not target:
+        return None
+    rows = conn.execute(
+        "SELECT a.id, a.customer, a.start, a.status, s.name AS service, p.name AS staff FROM appointments a "
+        "JOIN services s ON s.id = a.service_id JOIN staff p ON p.id = a.staff_id "
+        "WHERE a.status IN ('confirmed', 'completed') ORDER BY a.start"
+    ).fetchall()
+    wanted = target.split()
+    matches = [dict(r) for r in rows if all(w in normalize(r["customer"]).split() for w in wanted)]
+    if not matches:
+        return None
+    names: dict[str, int] = {}
+    for m in matches:
+        names[m["customer"]] = names.get(m["customer"], 0) + 1
+    full_name = max(names, key=names.get)
+    mine = [m for m in matches if m["customer"] == full_name]
+    now_iso = moment.isoformat(timespec="minutes")
+    past = [m for m in mine if m["start"] < now_iso]
+    upcoming = [m for m in mine if m["start"] >= now_iso and m["status"] == "confirmed"]
+
+    def most_common(key: str) -> str | None:
+        counts: dict[str, int] = {}
+        for m in past or mine:
+            counts[m[key]] = counts.get(m[key], 0) + 1
+        return max(counts, key=lambda k: (counts[k], k)) if counts else None
+
+    return {
+        "customer": full_name,
+        "visits": len(past),
+        "usual_service": most_common("service"),
+        "usual_barber": most_common("staff"),
+        "last_visit": past[-1]["start"] if past else None,
+        "upcoming": [get_appointment(conn, m["id"]) for m in upcoming],
+    }
+
+
+# ---------------------------------------------------------------- owner blocks
+
+def block_time(
+    conn: sqlite3.Connection,
+    staff: Staff,
+    d: date,
+    moment: datetime,
+    start: time | None = None,
+    end: time | None = None,
+    period: str | None = None,
+    reason: str = "",
+) -> dict:
+    """Takes time off a barber's schedule. Existing appointments stay; they are returned as conflicts."""
+    window = hours_for(conn, d)
+    if window is None:
+        raise BookingError(f"The shop is already closed {say_date_on(d, moment.date())}.")
+    opens, closes = window
+    if start is None and end is None and period:
+        p = PERIOD_ALIASES.get(normalize(period), normalize(period))
+        start, end = PERIODS.get(p, (opens, closes))
+    start = max(start or opens, opens)
+    end = min(end or closes, closes)
+    if end <= start:
+        raise BookingError("The end of the block has to be after the start.")
+    s, e = datetime.combine(d, start), datetime.combine(d, end)
+    if e <= moment:
+        raise BookingError("That time has already passed.")
+    cur = conn.execute(
+        "INSERT INTO blocks (staff_id, start, end, reason) VALUES (?, ?, ?, ?)",
+        (staff.id, s.isoformat(timespec="minutes"), e.isoformat(timespec="minutes"), reason.strip()),
+    )
+    conn.commit()
+    conflicts = [
+        a for a in appointments_on(conn, d)
+        if a["staff"] == staff.name and a["status"] == "confirmed"
+        and datetime.fromisoformat(a["start"]) < e and datetime.fromisoformat(a["end"]) > s
+    ]
+    return {"id": cur.lastrowid, "staff": staff.name, "start": s.isoformat(timespec="minutes"),
+            "end": e.isoformat(timespec="minutes"), "reason": reason.strip(), "conflicts": conflicts}
+
+
+def blocks_on(conn: sqlite3.Connection, d: date) -> list[dict]:
+    rows = conn.execute(
+        "SELECT b.id, b.start, b.end, b.reason, p.name AS staff FROM blocks b JOIN staff p ON p.id = b.staff_id "
+        "WHERE substr(b.start, 1, 10) = ? ORDER BY b.start",
+        (d.isoformat(),),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------- demo data
@@ -465,6 +647,26 @@ def seed_demo(conn: sqlite3.Connection, today: date) -> None:
         (3, "10:30", "Ryan Nunez", "Haircut", "Marcus"),
         (4, "09:00", "Greg Reyes", "Haircut", "Diego"),
     ]
+    # past visits, so returning customers have a "usual"
+    history = [
+        (-7, "10:00", "Chris Miller", "Haircut", "Marcus"),
+        (-21, "11:00", "Chris Miller", "Haircut", "Marcus"),
+        (-35, "10:30", "Chris Miller", "Haircut", "Marcus"),
+        (-14, "15:00", "Kevin Lee", "Haircut and beard", "Diego"),
+        (-28, "16:00", "Kevin Lee", "Haircut and beard", "Diego"),
+        (-10, "09:00", "Sam Torres", "Beard trim", "Diego"),
+    ]
+    for days, hhmm, customer, service, barber in history:
+        d = today + timedelta(days=days)
+        while hours_for(conn, d) is None:
+            d -= timedelta(days=1)
+        start = datetime.combine(d, time.fromisoformat(hhmm))
+        end = start + timedelta(minutes=durations[services[service]])
+        conn.execute(
+            "INSERT INTO appointments (customer, service_id, staff_id, start, end, status, source) "
+            "VALUES (?, ?, ?, ?, ?, 'completed', 'history')",
+            (customer, services[service], staff[barber], start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")),
+        )
     for days, hhmm, customer, service, barber in template:
         d = today + timedelta(days=days)
         window = hours_for(conn, d)

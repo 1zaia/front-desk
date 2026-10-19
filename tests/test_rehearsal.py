@@ -91,3 +91,36 @@ def test_owner_summary():
     r = _conversation("haircut tomorrow at 10 AM, I'm Nina", "how's my day tomorrow?")
     assert r[1]["calls"][0]["tool"] == "daily_summary"
     assert "1 customer" in r[1]["reply"]
+
+
+def test_waitlist_after_a_full_slot():
+    r = _conversation("haircut Friday at 10 AM, I'm Ana", "haircut Friday at 10 AM, I'm Bea")
+    r = _conversation("Can I get a haircut Friday at 10 AM? My name is Sam", "yes please")
+    assert not r[0]["calls"][-1]["ok"] and "waitlist" in r[0]["reply"]
+    c = r[1]["calls"][0]
+    assert c["tool"] == "join_waitlist" and c["ok"]
+    assert c["arguments"] == {"customer_name": "Sam", "service": "haircut", "date": "friday", "time": "10 am"}
+    # Ana cancels: Sam gets the 10 AM slot automatically
+    r = _conversation("I need to cancel, this is Ana")
+    assert r[0]["calls"][0]["tool"] == "cancel_appointment" and r[0]["calls"][0]["ok"]
+
+
+def test_returning_customer_gets_the_usual(monkeypatch):
+    monkeypatch.setenv("FRONTDESK_DEMO", "1")
+    r = _conversation("Hi, it's Sam", "yes, Friday at 11 AM")
+    assert r[0]["calls"][0]["tool"] == "customer_history"
+    assert r[0]["reply"].startswith("Welcome back, Sam!") and r[0]["reply"].endswith("Want the usual?")
+    c = r[1]["calls"][0]
+    assert c["tool"] == "book_appointment" and c["ok"]
+    assert c["arguments"]["service"] == "the usual" and c["arguments"]["customer_name"] == "Sam Torres"
+    assert r[1]["reply"].startswith("You're all set, Sam! Your usual beard trim")
+
+
+def test_owner_blocks_time():
+    r = _conversation("Block Diego's Thursday afternoon")
+    c = r[0]["calls"][0]
+    assert c["tool"] == "block_time" and c["ok"]
+    assert c["arguments"] == {"barber": "Diego", "date": "thursday", "period": "afternoon"}
+    r = _conversation("Marcus is off Friday from 1 to 3 pm")
+    assert r[0]["calls"][0]["arguments"] == {"barber": "Marcus", "date": "friday", "start_time": "1 pm", "end_time": "3 pm"}
+    assert "from 1 PM to 3 PM" in r[0]["reply"]
