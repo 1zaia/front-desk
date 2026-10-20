@@ -8,7 +8,7 @@ For each customer utterance:
 
 Configuration through environment variables:
 - FRONTDESK_MODEL: one or more models / inference profiles, comma-separated, in order of preference
-  (default: us.amazon.nova-lite-v1:0, us.amazon.nova-micro-v1:0, us.amazon.nova-2-lite-v1:0). If a model
+  (default: us.amazon.nova-pro-v1:0, us.amazon.nova-lite-v1:0, us.amazon.nova-micro-v1:0, us.amazon.nova-2-lite-v1:0). If a model
   has no quota or no access, the agent moves on to the next one.
 - FRONTDESK_MCP_URL: MCP server address (default: this same server, http://127.0.0.1:PORT/mcp;
   "local" uses the in-process server, without HTTP).
@@ -35,7 +35,7 @@ try:  # Python 3.11+
 except NameError:  # Python 3.10: backport installed with anyio
     from exceptiongroup import BaseExceptionGroup
 
-DEFAULT_MODELS = "us.amazon.nova-lite-v1:0,us.amazon.nova-micro-v1:0,us.amazon.nova-2-lite-v1:0"
+DEFAULT_MODELS = "us.amazon.nova-pro-v1:0,us.amazon.nova-lite-v1:0,us.amazon.nova-micro-v1:0,us.amazon.nova-2-lite-v1:0"
 MODEL_PAUSE_S = 3600  # after a "no quota", skip that model for 1 hour
 MAX_ROUNDS = 6  # model -> tool round trips per utterance
 MAX_HISTORY = 20  # messages kept per session
@@ -50,8 +50,11 @@ Rules:
 - Before booking you need the customer's name, the service, the day and the time. If something is missing, ask only for what is missing.
 - Pass dates and times to the tools the way the customer said them (e.g. "Friday", "tomorrow", "9 AM").
 - Keep it short, two sentences at most, friendly and natural to be spoken out loud. No lists, no markdown, no emojis.
-- If the customer says their name before booking, use customer_history to greet returning customers; if they want "the usual", book with service "the usual".
-- If the time they want is taken or nothing is open, offer the waitlist and use join_waitlist if they accept.
+- When the customer introduces themselves (e.g. "Hey, it's Sam"), call customer_history and answer with its "speech" as it is. Don't check availability or offer times until they say what they want.
+- If they want "the usual" (or say yes after "Want the usual?"), call book_appointment with service exactly "the usual" and no barber: the tool picks their usual service and barber. Never replace "the usual" with a service or barber name yourself.
+- Pass the customer's name exactly as they said it, with spaces.
+- If the customer asks for one specific time and you already know their name, the service and the day, call book_appointment right away: it books it, or says the time is taken and offers the waitlist.
+- If the time they want is taken or nothing is open, offer the waitlist and use join_waitlist only if they accept, passing the time they asked for.
 - If the person is the owner asking about the schedule, use daily_summary. If the owner wants to take time off a barber's schedule, use block_time."""
 
 
@@ -63,6 +66,30 @@ def spoken_text(text: str) -> str:
     """Removes the <thinking>...</thinking> reasoning Nova adds around tool use, so it is never spoken aloud."""
     text = _TAGS.sub("", _THINKING.sub(" ", text or ""))
     return re.sub(r"\s+", " ", text).strip()
+
+
+_WAITLIST_OK = re.compile(r"\b(wait ?list|waiting list|yes|yeah|yep|sure|ok|okay|please do|go ahead|sounds good|do it)\b", re.IGNORECASE)
+
+
+def _latest_customer_text(messages: list[dict]) -> str:
+    for m in reversed(messages):
+        if m["role"] == "user":
+            texts = [c["text"] for c in m["content"] if "text" in c]
+            if texts:
+                return " ".join(texts)
+    return ""
+
+
+def _agreed_to_waitlist(messages: list[dict]) -> bool:
+    """True when the customer's latest words ask for (or accept) the waitlist."""
+    return bool(_WAITLIST_OK.search(_latest_customer_text(messages)))
+
+
+def _ask_and_wait(tool: str, speech: str) -> bool:
+    """Tool answers that end in a question for the customer: speak them as they are and wait for the reply."""
+    if tool == "customer_history":
+        return speech.endswith("Want the usual?")
+    return tool == "book_appointment" and "already taken" in speech and "waitlist" in speech
 
 
 @dataclass
@@ -236,6 +263,15 @@ def _call_model(converse, **kwargs) -> tuple[dict, str]:
         try:
             return converse(modelId=m, **kwargs), m
         except Exception as e:
+            if _code(e) == "ModelErrorException":
+                # "Model produced invalid sequence as part of ToolUse": a one-off glitch, so try once more, then move on
+                try:
+                    return converse(modelId=m, **kwargs), m
+                except Exception as again:
+                    if _code(again) != "ModelErrorException":
+                        raise
+                    last_error = again
+                    continue
             if not _switching_model_helps(e):
                 raise
             _paused[m] = time.time() + MODEL_PAUSE_S
@@ -347,15 +383,26 @@ async def _rounds(target, options, messages, calls, business, converse, used_mod
                 break
 
             results = []
+            stop_with = None  # a tool answer that must reach the customer as-is, before the model goes on
             for req in requests:
                 arguments = req.get("input") or {}
                 t0 = time.perf_counter()
+                if req["name"] == "join_waitlist" and not _agreed_to_waitlist(messages):
+                    # Nova sometimes signs people up without asking: hand it back so it asks first
+                    results.append({"toolResult": {"toolUseId": req["toolUseId"], "status": "error", "content": [{"json": {
+                        "ok": False,
+                        "speech": "Not done: the customer hasn't asked for the waitlist yet. Tell them the time they want is "
+                                  "taken and ask if they want to join the waitlist. Call join_waitlist only after they say yes.",
+                    }}]}})
+                    continue
                 try:
                     r = await mcp_client.call_tool(req["name"], arguments)
                     data = result_data(r)
                     failed = bool(r.is_error)
                 except Exception as e:  # network failure or unknown tool: the model needs to know
                     data, failed = {"ok": False, "speech": f"Tool call failed: {e}"}, True
+                if not failed and _ask_and_wait(req["name"], data.get("speech", "")):
+                    stop_with = data["speech"]
                 ms = round((time.perf_counter() - t0) * 1000)
                 calls.append({
                     "tool": req["name"],
@@ -370,6 +417,10 @@ async def _rounds(target, options, messages, calls, business, converse, used_mod
                     **({"status": "error"} if failed else {}),
                 }})
             messages.append({"role": "user", "content": results})
+            if stop_with:
+                answer = stop_with
+                messages.append({"role": "assistant", "content": [{"text": answer}]})
+                break
         else:
             answer = "Sorry, I got a bit tangled up there. Could you say that again?"
     return answer, ms_model, ms_tools_list

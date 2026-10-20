@@ -481,6 +481,13 @@ def add_to_waitlist(
         p = PERIOD_ALIASES.get(normalize(period or ""), normalize(period or ""))
         earliest, latest = PERIODS.get(p, (opens, closes))
         earliest, latest = max(earliest, opens), min(latest, closes)
+    same = conn.execute(
+        "SELECT id FROM waitlist WHERE status = 'waiting' AND customer = ? AND service_id = ? AND staff_id IS ? "
+        "AND day = ? AND earliest = ? AND latest = ?",
+        (customer, service.id, staff.id if staff else None, d.isoformat(), earliest.strftime("%H:%M"), latest.strftime("%H:%M")),
+    ).fetchone()
+    if same:  # asked twice (e.g. "waitlist, please" after already being added): keep a single entry
+        return _waitlist_entry(conn, same["id"])
     cur = conn.execute(
         "INSERT INTO waitlist (customer, service_id, staff_id, day, earliest, latest) VALUES (?, ?, ?, ?, ?, ?)",
         (customer, service.id, staff.id if staff else None, d.isoformat(), earliest.strftime("%H:%M"), latest.strftime("%H:%M")),

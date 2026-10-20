@@ -71,3 +71,12 @@
 - **Severity:** high for voice apps (the demo would speak the model's inner monologue)
 - **Workaround:** strip `<thinking>...</thinking>` (including an unclosed tag) from the final text before speaking it; covered by tests.
 - **Suggestion:** return Nova's reasoning as a separate `reasoningContent` block in the Converse API, or add an inference option to turn it off, and document the behavior in the Nova tool-use guide with a voice example.
+
+## Nova Lite fails mid-conversation with "invalid sequence as part of ToolUse"
+- **Task:** run the demo video script against the agent (Converse API with tool use, `us.amazon.nova-lite-v1:0`, us-east-2).
+- **Steps:** a returning customer says "Hey, it's Sam." (the agent calls `customer_history`), then "Yes, today at 11."
+- **Expected:** a `book_appointment` tool call.
+- **What happened:** `ModelErrorException: Model produced invalid sequence as part of ToolUse. Please refer to the model tool use troubleshooting guide.` The request was valid and the same conversation works on Nova Pro, so it's the model output, not our input. Nova Lite and Nova 2 Lite also drifted from the instructions (offering times before asking "Want the usual?", joining the waitlist without asking, asking an owner "are you the owner?").
+- **Severity:** high for a live voice demo (the customer gets an error mid-booking)
+- **Workaround:** retry that error once, then move to the next model; Nova Pro is now first. A script (`scripts/check_video_script.py`) runs the whole demo against the real model to catch drift before recording.
+- **Suggestion:** have Converse retry or constrain decoding internally for tool calls, and document in the Nova tool-use guide which settings (e.g. greedy decoding) avoid this error.

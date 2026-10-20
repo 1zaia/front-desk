@@ -208,6 +208,7 @@ def test_waitlist_fills_a_cancelled_slot(server):
                 await c.call_tool("book_appointment", {"customer_name": name, "service": "haircut", "date": "Friday", "time": "10 AM"})
             r["full"] = _data(await c.call_tool("book_appointment", {"customer_name": "Sam", "service": "haircut", "date": "Friday", "time": "10 AM"}))
             r["join"] = _data(await c.call_tool("join_waitlist", {"customer_name": "Sam", "service": "haircut", "date": "Friday", "time": "10 AM"}))
+            r["again"] = _data(await c.call_tool("join_waitlist", {"customer_name": "sam", "service": "haircut", "date": "Friday", "time": "10 AM"}))
             r["cancel"] = _data(await c.call_tool("cancel_appointment", {"customer_name": "Ana"}))
             r["summary"] = _data(await c.call_tool("daily_summary", {"date": "Friday"}))
         return r
@@ -215,6 +216,7 @@ def test_waitlist_fills_a_cancelled_slot(server):
     r = anyio.run(run)
     assert not r["full"]["ok"] and "waitlist" in r["full"]["speech"]
     assert r["join"]["ok"] and "waitlist" in r["join"]["speech"] and "10 AM" in r["join"]["speech"]
+    assert r["again"]["waitlist_entry"]["id"] == r["join"]["waitlist_entry"]["id"]  # no duplicate entry
     filled = r["cancel"]["filled_from_waitlist"]
     assert len(filled) == 1 and filled[0]["customer"] == "Sam" and filled[0]["start"] == "2026-10-23T10:00"
     assert filled[0]["source"] == "waitlist"
@@ -222,7 +224,7 @@ def test_waitlist_fills_a_cancelled_slot(server):
     assert "waitlist already filled 1" in r["summary"]["speech"]
     with urllib.request.urlopen(server + "/api/week?start=2026-10-23&days=1") as resp:
         day = json.loads(resp.read())["days"][0]
-    assert day["waitlist"][0]["status"] == "booked"
+    assert len(day["waitlist"]) == 1 and day["waitlist"][0]["status"] == "booked"
     assert any(a["customer"] == "Sam" and a["source"] == "waitlist" for a in day["appointments"])
 
 
@@ -235,6 +237,10 @@ def test_returning_customer_and_owner_block(tmp_path):
                 r["sam"] = _data(await c.call_tool("customer_history", {"customer_name": "Sam"}))
                 r["new"] = _data(await c.call_tool("customer_history", {"customer_name": "Zoe"}))
                 r["usual"] = _data(await c.call_tool("book_appointment", {"customer_name": "Sam", "service": "the usual", "date": "Friday", "time": "11 AM"}))
+                # What Nova actually sent: the usual service by name, with the full name and no barber
+                r["by_name"] = _data(await c.call_tool("book_appointment", {"customer_name": "Sam Torres", "service": "Beard trim", "date": "Friday", "time": "2 PM"}))
+                # Diego busy at 2 PM now: the usual service still books, with whoever is free
+                r["busy"] = _data(await c.call_tool("book_appointment", {"customer_name": "Sam", "service": "beard trim", "date": "Friday", "time": "2 PM"}))
                 r["block"] = _data(await c.call_tool("block_time", {"barber": "Diego", "date": "Thursday", "period": "afternoon", "reason": "dentist"}))
                 r["after"] = _data(await c.call_tool("check_availability", {"date": "Thursday", "service": "haircut", "period": "afternoon", "barber": "Diego"}))
             return r
@@ -245,6 +251,8 @@ def test_returning_customer_and_owner_block(tmp_path):
         assert "first visit" in r["new"]["speech"]
         assert r["usual"]["ok"] and r["usual"]["appointment"]["service"] == "Beard trim" and r["usual"]["appointment"]["staff"] == "Diego"
         assert r["usual"]["speech"].startswith("You're all set, Sam! Your usual beard trim on Friday")
+        assert r["by_name"]["ok"] and r["by_name"]["appointment"]["staff"] == "Diego"
+        assert r["busy"]["ok"] and r["busy"]["appointment"]["staff"] == "Marcus"
         assert r["block"]["ok"] and r["block"]["speech"].startswith("Done. Diego is blocked on Thursday, October 22 from noon to 5 PM")
         assert not r["after"]["slots"] and "waitlist" in r["after"]["speech"]
     finally:

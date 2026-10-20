@@ -122,6 +122,59 @@ def test_spoken_text(raw, spoken):
     assert agent.spoken_text(raw) == spoken
 
 
+def test_want_the_usual_is_asked_before_anything_else(monkeypatch):
+    monkeypatch.setenv("FRONTDESK_DEMO", "1")  # sample data: Sam is a regular (beard trim with Diego)
+    # Nova Lite tried to jump to open times right after the greeting; the question must reach the customer first
+    model = FakeModel([
+        [("customer_history", {"customer_name": "Sam"})],
+        [("check_availability", {"date": "today", "service": "beard trim", "barber": "Diego"})],
+        "For a beard trim today with Diego, I have 9 AM.",
+    ])
+    r = anyio.run(lambda: agent.respond("Hey, it's Sam.", server=_server(), converse=model))
+    assert r["reply"].startswith("Welcome back, Sam!") and r["reply"].endswith("Want the usual?")
+    assert [c["tool"] for c in r["calls"]] == ["customer_history"]
+    assert len(model.calls) == 1  # the model didn't get to offer times
+
+
+def test_taken_time_is_said_as_is():
+    model = FakeModel([
+        [("book_appointment", {"customer_name": "Ana", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        "Booked, Ana.",
+        [("book_appointment", {"customer_name": "Bea", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        "Booked, Bea.",
+        [("book_appointment", {"customer_name": "Nick", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        "For a haircut Friday I have 9 AM or 11 AM.",  # never reached: the tool's answer is spoken
+    ])
+
+    async def run():
+        for text in ("Ana, haircut Friday 10", "Bea, haircut Friday 10"):
+            await agent.respond(text, server=_server(), converse=model)
+        return await agent.respond("Can I get a haircut Friday at 10? I'm Nick.", server=_server(), converse=model)
+
+    r = anyio.run(run)
+    assert r["reply"] == "Sorry, 10 AM is already taken. I can check other times, or put you on the waitlist."
+
+
+def test_waitlist_needs_the_customers_ok():
+    model = FakeModel([
+        [("join_waitlist", {"customer_name": "Nick", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        "Sorry, 10 AM is taken. Want me to put you on the waitlist?",
+        [("join_waitlist", {"customer_name": "Nick", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        "Got it, Nick.",
+    ])
+
+    async def run():
+        r1 = await agent.respond("Can I get a haircut Friday at 10? I'm Nick.", server=_server(), converse=model)
+        r2 = await agent.respond("Waitlist, please.", session_id=r1["session"], server=_server(), converse=model)
+        return r1, r2
+
+    r1, r2 = anyio.run(run)
+    assert r1["calls"] == [] and "waitlist" in r1["reply"]
+    blocked = model.calls[1]["messages"][-1]["content"][0]["toolResult"]
+    assert blocked["status"] == "error" and "hasn't asked" in blocked["content"][0]["json"]["speech"]
+    assert [c["tool"] for c in r2["calls"]] == ["join_waitlist"] and r2["calls"][0]["ok"]
+
+
 def test_empty_utterance():
     with pytest.raises(ValueError):
         anyio.run(lambda: agent.respond("   ", server=_server(), converse=FakeModel([])))
@@ -159,6 +212,37 @@ def test_no_quota_moves_to_the_next_model(monkeypatch):
     anyio.run(lambda: agent.respond("hi again", server=_server(), converse=converse))
     assert tried == ["us.amazon.nova-micro-v1:0"]
     agent._paused.clear()
+
+
+def test_invalid_tool_sequence_is_retried_then_next_model(monkeypatch):
+    # Seen with Nova Lite: "Model produced invalid sequence as part of ToolUse"
+    from botocore.exceptions import ClientError
+    monkeypatch.setenv("FRONTDESK_MODEL", "us.amazon.nova-pro-v1:0,us.amazon.nova-lite-v1:0")
+    agent._paused.clear()
+    glitch = ClientError({"Error": {"Code": "ModelErrorException", "Message": "Model produced invalid sequence as part of ToolUse."}}, "Converse")
+    tried = []
+
+    def flaky_once(**kw):
+        tried.append(kw["modelId"])
+        if len(tried) == 1:
+            raise glitch
+        return _text("Hi!")
+
+    r = anyio.run(lambda: agent.respond("hi", server=_server(), converse=flaky_once))
+    assert r["reply"] == "Hi!" and tried == ["us.amazon.nova-pro-v1:0", "us.amazon.nova-pro-v1:0"]
+
+    tried.clear()
+
+    def pro_broken(**kw):
+        tried.append(kw["modelId"])
+        if kw["modelId"] == "us.amazon.nova-pro-v1:0":
+            raise glitch
+        return _text("Hi!")
+
+    r = anyio.run(lambda: agent.respond("hi", server=_server(), converse=pro_broken))
+    assert r["model"] == "us.amazon.nova-lite-v1:0"
+    assert tried == ["us.amazon.nova-pro-v1:0", "us.amazon.nova-pro-v1:0", "us.amazon.nova-lite-v1:0"]
+    assert not agent._paused  # a glitch doesn't pause the model like a missing quota does
 
 
 def test_all_without_quota_explains(monkeypatch):
