@@ -8,7 +8,7 @@ For each customer utterance:
 
 Configuration through environment variables:
 - FRONTDESK_MODEL: one or more models / inference profiles, comma-separated, in order of preference
-  (default: us.amazon.nova-lite-v1:0, us.amazon.nova-micro-v1:0, us.amazon.nova-2-lite-v1:0). If a model
+  (default: us.amazon.nova-pro-v1:0, us.amazon.nova-lite-v1:0, us.amazon.nova-micro-v1:0, us.amazon.nova-2-lite-v1:0). If a model
   has no quota or no access, the agent moves on to the next one.
 - FRONTDESK_MCP_URL: MCP server address (default: this same server, http://127.0.0.1:PORT/mcp;
   "local" uses the in-process server, without HTTP).
@@ -35,7 +35,7 @@ try:  # Python 3.11+
 except NameError:  # Python 3.10: backport installed with anyio
     from exceptiongroup import BaseExceptionGroup
 
-DEFAULT_MODELS = "us.amazon.nova-lite-v1:0,us.amazon.nova-micro-v1:0,us.amazon.nova-2-lite-v1:0"
+DEFAULT_MODELS = "us.amazon.nova-pro-v1:0,us.amazon.nova-lite-v1:0,us.amazon.nova-micro-v1:0,us.amazon.nova-2-lite-v1:0"
 MODEL_PAUSE_S = 3600  # after a "no quota", skip that model for 1 hour
 MAX_ROUNDS = 6  # model -> tool round trips per utterance
 MAX_HISTORY = 20  # messages kept per session
@@ -260,6 +260,15 @@ def _call_model(converse, **kwargs) -> tuple[dict, str]:
         try:
             return converse(modelId=m, **kwargs), m
         except Exception as e:
+            if _code(e) == "ModelErrorException":
+                # "Model produced invalid sequence as part of ToolUse": a one-off glitch, so try once more, then move on
+                try:
+                    return converse(modelId=m, **kwargs), m
+                except Exception as again:
+                    if _code(again) != "ModelErrorException":
+                        raise
+                    last_error = again
+                    continue
             if not _switching_model_helps(e):
                 raise
             _paused[m] = time.time() + MODEL_PAUSE_S

@@ -195,6 +195,37 @@ def test_no_quota_moves_to_the_next_model(monkeypatch):
     agent._paused.clear()
 
 
+def test_invalid_tool_sequence_is_retried_then_next_model(monkeypatch):
+    # Seen with Nova Lite: "Model produced invalid sequence as part of ToolUse"
+    from botocore.exceptions import ClientError
+    monkeypatch.setenv("FRONTDESK_MODEL", "us.amazon.nova-pro-v1:0,us.amazon.nova-lite-v1:0")
+    agent._paused.clear()
+    glitch = ClientError({"Error": {"Code": "ModelErrorException", "Message": "Model produced invalid sequence as part of ToolUse."}}, "Converse")
+    tried = []
+
+    def flaky_once(**kw):
+        tried.append(kw["modelId"])
+        if len(tried) == 1:
+            raise glitch
+        return _text("Hi!")
+
+    r = anyio.run(lambda: agent.respond("hi", server=_server(), converse=flaky_once))
+    assert r["reply"] == "Hi!" and tried == ["us.amazon.nova-pro-v1:0", "us.amazon.nova-pro-v1:0"]
+
+    tried.clear()
+
+    def pro_broken(**kw):
+        tried.append(kw["modelId"])
+        if kw["modelId"] == "us.amazon.nova-pro-v1:0":
+            raise glitch
+        return _text("Hi!")
+
+    r = anyio.run(lambda: agent.respond("hi", server=_server(), converse=pro_broken))
+    assert r["model"] == "us.amazon.nova-lite-v1:0"
+    assert tried == ["us.amazon.nova-pro-v1:0", "us.amazon.nova-pro-v1:0", "us.amazon.nova-lite-v1:0"]
+    assert not agent._paused  # a glitch doesn't pause the model like a missing quota does
+
+
 def test_all_without_quota_explains(monkeypatch):
     from botocore.exceptions import ClientError
     monkeypatch.setenv("FRONTDESK_MODEL", "a,b")

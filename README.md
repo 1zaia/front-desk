@@ -40,7 +40,7 @@ The Alexa+ developer tools are in closed preview, so the demo uses a simulated A
 
 The agent uses the default AWS credentials. If you sign in with `aws login`, botocore needs its `crt` extra (already in `requirements.txt` as `boto3[crt]`). Settings:
 - `AWS_PROFILE` and `AWS_REGION` (default `us-east-2`).
-- `FRONTDESK_MODEL`: Bedrock models or inference profiles, comma-separated, in order of preference (default: Nova Lite, Nova Micro and Nova 2 Lite). If one has no quota or no access, the agent moves on to the next.
+- `FRONTDESK_MODEL`: Bedrock models or inference profiles, comma-separated, in order of preference (default: Nova Pro, then Nova Lite, Nova Micro and Nova 2 Lite). If one has no quota or no access, the agent moves on to the next.
 - `FRONTDESK_AGENT`: `bedrock` (default), `rehearsal` (a simple rule-based agent without the model, to test the demo; it uses the same MCP tools and the screen says "rehearsal mode") or `auto` (Bedrock, and if it fails, rehearsal mode with a notice on screen; this is what the deployment uses).
 - `FRONTDESK_HOSTS`: public domains the MCP server accepts when it runs behind a proxy (e.g. `front-desk.example.com`). Without it, the SDK only accepts `localhost` and answers 421.
 - `FRONTDESK_RATE_PER_IP` and `FRONTDESK_DAILY_LIMIT`: utterances per IP every 10 minutes (default 40) and per day (default 600), to protect the AWS credits.
