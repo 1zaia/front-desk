@@ -122,6 +122,40 @@ def test_spoken_text(raw, spoken):
     assert agent.spoken_text(raw) == spoken
 
 
+def test_want_the_usual_is_asked_before_anything_else(monkeypatch):
+    monkeypatch.setenv("FRONTDESK_DEMO", "1")  # sample data: Sam is a regular (beard trim with Diego)
+    # Nova Lite tried to jump to open times right after the greeting; the question must reach the customer first
+    model = FakeModel([
+        [("customer_history", {"customer_name": "Sam"})],
+        [("check_availability", {"date": "today", "service": "beard trim", "barber": "Diego"})],
+        "For a beard trim today with Diego, I have 9 AM.",
+    ])
+    r = anyio.run(lambda: agent.respond("Hey, it's Sam.", server=_server(), converse=model))
+    assert r["reply"].startswith("Welcome back, Sam!") and r["reply"].endswith("Want the usual?")
+    assert [c["tool"] for c in r["calls"]] == ["customer_history"]
+    assert len(model.calls) == 1  # the model didn't get to offer times
+
+
+def test_waitlist_needs_the_customers_ok():
+    model = FakeModel([
+        [("join_waitlist", {"customer_name": "Nick", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        "Sorry, 10 AM is taken. Want me to put you on the waitlist?",
+        [("join_waitlist", {"customer_name": "Nick", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        "Got it, Nick.",
+    ])
+
+    async def run():
+        r1 = await agent.respond("Can I get a haircut Friday at 10? I'm Nick.", server=_server(), converse=model)
+        r2 = await agent.respond("Waitlist, please.", session_id=r1["session"], server=_server(), converse=model)
+        return r1, r2
+
+    r1, r2 = anyio.run(run)
+    assert r1["calls"] == [] and "waitlist" in r1["reply"]
+    blocked = model.calls[1]["messages"][-1]["content"][0]["toolResult"]
+    assert blocked["status"] == "error" and "hasn't asked" in blocked["content"][0]["json"]["speech"]
+    assert [c["tool"] for c in r2["calls"]] == ["join_waitlist"] and r2["calls"][0]["ok"]
+
+
 def test_empty_utterance():
     with pytest.raises(ValueError):
         anyio.run(lambda: agent.respond("   ", server=_server(), converse=FakeModel([])))
