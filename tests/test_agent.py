@@ -139,7 +139,9 @@ def test_want_the_usual_is_asked_before_anything_else(monkeypatch):
 def test_taken_time_is_said_as_is():
     model = FakeModel([
         [("book_appointment", {"customer_name": "Ana", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        "Booked, Ana.",
         [("book_appointment", {"customer_name": "Bea", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        "Booked, Bea.",
         [("book_appointment", {"customer_name": "Nick", "service": "haircut", "date": "Friday", "time": "10 AM"})],
         "For a haircut Friday I have 9 AM or 11 AM.",  # never reached: the tool's answer is spoken
     ])
