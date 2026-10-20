@@ -27,11 +27,12 @@ from frontdesk.schedule import BookingError
 mcp = MCPServer(
     name="front-desk",
     title="Front Desk",
-    version="0.3.0",
+    version="0.4.0",
     instructions=(
         "You are the receptionist of a small business (a barbershop). Use the tools to look up "
-        "services and open slots, and to book, cancel and reschedule appointments. Always confirm the "
-        "customer's name before booking. Reply with the sentence in the 'speech' field, short and natural for voice."
+        "services and open slots, to book, cancel and reschedule appointments, to put customers on the waitlist "
+        "and to recognize returning customers. The owner can also block time and ask for the daily summary. "
+        "Always confirm the customer's name before booking. Reply with the sentence in the 'speech' field, short and natural for voice."
     ),
 )
 
@@ -108,7 +109,7 @@ def check_availability(
     if not slots:
         return {
             "ok": True,
-            "speech": f"Sorry, there's nothing open for a {s.name.lower()} {when}{part}{with_whom}.",
+            "speech": f"Sorry, there's nothing open for a {s.name.lower()} {when}{part}{with_whom}. Want me to put you on the waitlist?",
             "date": d.isoformat(), "service": s.name, "slots": [],
         }
     times: list[str] = []
@@ -136,21 +137,36 @@ def book_appointment(
     time: Annotated[str, Field(description="Start time, e.g. 9 AM, 9:30, 2:30 PM.")],
     barber: Annotated[str | None, Field(description="Optional: requested barber.")] = None,
 ) -> dict[str, Any]:
-    """Books an appointment. Checks opening hours and that the slot is free before saving."""
+    """Books an appointment. Checks opening hours and that the slot is free before saving.
+
+    For a returning customer, service can be "the usual": it books their usual service with their usual barber.
+    """
     moment = schedule.now()
+    usual = schedule.is_usual(service)
     try:
         with _conn() as conn:
             d = schedule.parse_date(date, moment.date())
             h = schedule.parse_time(time)
-            s = schedule.find_service(conn, service)
             b = schedule.find_staff(conn, barber)
+            if usual:
+                profile = schedule.customer_profile(conn, customer_name, moment)
+                if not profile or not profile["usual_service"]:
+                    return {"ok": False, "speech": f"I don't see a previous visit for {customer_name}. Which service would you like?"}
+                customer_name = profile["customer"]
+                s = schedule.find_service(conn, profile["usual_service"])
+                b = b or schedule.find_staff(conn, profile["usual_barber"])
+            else:
+                s = schedule.find_service(conn, service)
             appt = schedule.book(conn, customer_name, s, datetime.combine(d, h), moment, b)
     except BookingError as e:
+        if "already taken" in str(e):
+            return {"ok": False, "speech": f"{e} I can check other times, or put you on the waitlist."}
         return _error(e)
     first = appt["customer"].split()[0]
+    what = f"your usual {appt['service'].lower()}" if usual else f"a {appt['service'].lower()}"
     return {
         "ok": True,
-        "speech": f"You're all set, {first}! A {appt['service'].lower()} {_when(appt, moment.date())}.",
+        "speech": f"You're all set, {first}! {what[0].upper()}{what[1:]} {_when(appt, moment.date())}.",
         "appointment": appt,
     }
 
@@ -175,9 +191,13 @@ def cancel_appointment(
                 options = "; ".join(_describe(a, moment.date()) for a in found[:3])
                 return {"ok": False, "speech": f"I found more than one: {options}. Which one should I cancel?", "appointments": found}
             appt = schedule.cancel(conn, found[0]["id"])
+            freed = datetime.fromisoformat(appt["start"])
+            filled = schedule.fill_from_waitlist(conn, freed.date(), moment, freed)
     except BookingError as e:
         return _error(e)
-    return {"ok": True, "speech": f"Done. I cancelled {_describe(appt, moment.date())}.", "appointment": appt}
+    # the slot may go straight to someone on the waitlist; the caller isn't told who, the owner sees it on the dashboard
+    return {"ok": True, "speech": f"Done. I cancelled {_describe(appt, moment.date())}.", "appointment": appt,
+            "filled_from_waitlist": filled}
 
 
 @mcp.tool(
@@ -204,10 +224,13 @@ def reschedule_appointment(
             current_day = datetime.fromisoformat(found[0]["start"]).date()
             day = schedule.parse_date(new_date, moment.date()) if new_date else current_day
             new_start = datetime.combine(day, schedule.parse_time(new_time))
+            old_start = datetime.fromisoformat(found[0]["start"])
             appt = schedule.reschedule(conn, found[0]["id"], new_start, moment)
+            filled = schedule.fill_from_waitlist(conn, old_start.date(), moment, old_start)
     except BookingError as e:
         return _error(e)
-    return {"ok": True, "speech": f"Done! Your appointment is now {_when(appt, moment.date())}.", "appointment": appt}
+    return {"ok": True, "speech": f"Done! Your appointment is now {_when(appt, moment.date())}.", "appointment": appt,
+            "filled_from_waitlist": filled}
 
 
 @mcp.tool(title="Owner's daily summary", annotations=READ_ONLY)
@@ -232,12 +255,115 @@ def daily_summary(
     parts = [f"{when.capitalize()} you have {count}, with {schedule.dollars(r['expected_revenue_cents'])} expected."]
     if r["next"]:
         parts.append(f"Next up is {_describe(r['next'], moment.date())}.")
+    waiting = [w for w in r["waitlist"] if w["status"] == "waiting"]
+    filled = [w for w in r["waitlist"] if w["status"] == "booked"]
+    if filled:
+        parts.append(f"The waitlist already filled {len(filled)} cancelled slot{'s' if len(filled) != 1 else ''}.")
+    if waiting:
+        parts.append(f"{len(waiting)} {'person is' if len(waiting) == 1 else 'people are'} still on the waitlist.")
+    for block in r["blocks"]:
+        parts.append(f"{block['staff']} is blocked from {_hhmm(block['start'])} to {_hhmm(block['end'])}.")
     free = r["free_minutes_by_staff"]
-    if free:
+    if free and not r["blocks"]:
         most_free = max(free, key=free.get)
         hours = free[most_free] // 60
         parts.append(f"{most_free} has the most free time, about {hours} hour{'s' if hours != 1 else ''}.")
     return {"ok": True, "speech": " ".join(parts), **r}
+
+
+def _hhmm(iso: str) -> str:
+    return schedule.say_time(datetime.fromisoformat(iso).time())
+
+
+@mcp.tool(title="Join the waitlist", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
+def join_waitlist(
+    customer_name: Annotated[str, Field(description="Customer's name.")],
+    service: Annotated[str, Field(description="Service name.")],
+    date: Annotated[str, Field(description="Day the customer wants.")],
+    time: Annotated[str | None, Field(description="Optional: the exact start time they want, e.g. 10 AM.")] = None,
+    period: Annotated[str | None, Field(description="Optional: morning, afternoon or evening. Default: any time that day.")] = None,
+    barber: Annotated[str | None, Field(description="Optional: preferred barber.")] = None,
+) -> dict[str, Any]:
+    """Puts the customer on the waitlist when the time they want is full. If someone cancels, the slot is booked for them automatically."""
+    moment = schedule.now()
+    try:
+        with _conn() as conn:
+            d = schedule.parse_date(date, moment.date())
+            s = schedule.find_service(conn, service)
+            b = schedule.find_staff(conn, barber)
+            at = schedule.parse_time(time) if time else None
+            entry = schedule.add_to_waitlist(conn, customer_name, s, d, moment, at=at, period=period, staff=b)
+    except BookingError as e:
+        return _error(e)
+    when = schedule.say_date_on(d, moment.date())
+    if at:
+        window = f" at {schedule.say_time(at)}"
+    elif period:
+        window = f" in the {schedule.PERIOD_ALIASES.get(schedule.normalize(period), schedule.normalize(period))}"
+    else:
+        window = ""
+    first = entry["customer"].split()[0]
+    return {
+        "ok": True,
+        "speech": f"Got it, {first}. You're on the waitlist for a {entry['service'].lower()} {when}{window}. "
+                  "If a spot opens up, I'll book it for you automatically.",
+        "waitlist_entry": entry,
+    }
+
+
+@mcp.tool(title="Look up a returning customer", annotations=READ_ONLY)
+def customer_history(
+    customer_name: Annotated[str, Field(description="Customer's name, as they said it.")],
+) -> dict[str, Any]:
+    """Finds a returning customer: number of visits, usual service and barber, last visit and upcoming appointments."""
+    moment = schedule.now()
+    with _conn() as conn:
+        profile = schedule.customer_profile(conn, customer_name, moment)
+    if not profile or not profile["visits"]:
+        if profile and profile["upcoming"]:
+            nxt = profile["upcoming"][0]
+            return {"ok": True, "speech": f"Hi {profile['customer'].split()[0]}! You're booked {_when(nxt, moment.date())}.", "profile": profile}
+        return {"ok": True, "speech": f"Welcome, {customer_name.split()[0].title()}! Looks like it's your first visit with us.", "profile": None}
+    first = profile["customer"].split()[0]
+    last = datetime.fromisoformat(profile["last_visit"]).date()
+    speech = (f"Welcome back, {first}! Last time was a {profile['usual_service'].lower()} with {profile['usual_barber']} "
+              f"on {schedule.MONTH_NAMES[last.month - 1]} {last.day}.")
+    if profile["upcoming"]:
+        speech += f" You're also booked {_when(profile['upcoming'][0], moment.date())}."
+    else:
+        speech += " Want the usual?"
+    return {"ok": True, "speech": speech, "profile": profile}
+
+
+@mcp.tool(title="Block time off a barber's schedule", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
+def block_time(
+    barber: Annotated[str, Field(description="Barber whose time is blocked.")],
+    date: Annotated[str, Field(description="Day to block.")],
+    start_time: Annotated[str | None, Field(description="Optional: start of the block, e.g. 1 PM. Default: opening time.")] = None,
+    end_time: Annotated[str | None, Field(description="Optional: end of the block, e.g. 3 PM. Default: closing time.")] = None,
+    period: Annotated[str | None, Field(description="Optional: morning, afternoon or evening, instead of start and end times.")] = None,
+    reason: Annotated[str | None, Field(description="Optional: why, e.g. dentist, day off.")] = None,
+) -> dict[str, Any]:
+    """For the owner: takes time off a barber's schedule so nobody can book it. Reports appointments already in that time."""
+    moment = schedule.now()
+    try:
+        with _conn() as conn:
+            b = schedule.find_staff(conn, barber)
+            if b is None:
+                return {"ok": False, "speech": "Which barber should I block?"}
+            d = schedule.parse_date(date, moment.date())
+            start = schedule.parse_time(start_time) if start_time else None
+            end = schedule.parse_time(end_time) if end_time else None
+            block = schedule.block_time(conn, b, d, moment, start, end, period, reason or "")
+    except BookingError as e:
+        return _error(e)
+    s, e_ = datetime.fromisoformat(block["start"]), datetime.fromisoformat(block["end"])
+    speech = (f"Done. {b.name} is blocked {schedule.say_date_on(d, moment.date())} "
+              f"from {schedule.say_time(s.time())} to {schedule.say_time(e_.time())}.")
+    if block["conflicts"]:
+        names = schedule.join_and([f"{a['customer'].split()[0]} at {_hhmm(a['start'])}" for a in block["conflicts"]])
+        speech += f" Heads up: {names} {'is' if len(block['conflicts']) == 1 else 'are'} still booked in that time."
+    return {"ok": True, "speech": speech, "block": block}
 
 
 # ---------------------------------------------------------------- HTTP routes
@@ -284,6 +410,8 @@ async def api_week(request: Request) -> JSONResponse:
                 "opens": window[0].strftime("%H:%M") if window else None,
                 "closes": window[1].strftime("%H:%M") if window else None,
                 "appointments": schedule.appointments_on(conn, d),
+                "blocks": schedule.blocks_on(conn, d),
+                "waitlist": schedule.waitlist_on(conn, d),
             })
     return JSONResponse({
         "business": business,

@@ -14,7 +14,7 @@ import pytest
 from mcp import Client
 
 TOOLS = {"list_services", "check_availability", "book_appointment", "cancel_appointment",
-         "reschedule_appointment", "daily_summary"}
+         "reschedule_appointment", "daily_summary", "join_waitlist", "customer_history", "block_time"}
 
 
 def _free_port() -> int:
@@ -151,8 +151,10 @@ def test_annotations_and_structured_output(server):
             return tools, r
 
     tools, r = anyio.run(run)
-    for name in ("list_services", "check_availability", "daily_summary"):
+    for name in ("list_services", "check_availability", "daily_summary", "customer_history"):
         assert tools[name].annotations.read_only_hint is True
+    for name in ("join_waitlist", "block_time"):
+        assert tools[name].annotations.read_only_hint is False and tools[name].annotations.destructive_hint is False
     assert tools["cancel_appointment"].annotations.destructive_hint is True
     assert tools["book_appointment"].annotations.read_only_hint is False
     assert all(t.title for t in tools.values())
@@ -195,3 +197,56 @@ def test_rate_limit_per_ip(monkeypatch):
     other = SimpleNamespace(headers={"x-forwarded-for": "198.51.100.7"}, client=None)
     assert server._within_limits(other)
     server._utterances_by_ip.clear()
+
+
+def test_waitlist_fills_a_cancelled_slot(server):
+    """Full slot -> waitlist -> someone cancels -> the waiting customer gets the slot, and the dashboard sees it."""
+    async def run():
+        r = {}
+        async with Client(server + "/mcp", mode="legacy") as c:
+            for name in ("Ana", "Bea"):
+                await c.call_tool("book_appointment", {"customer_name": name, "service": "haircut", "date": "Friday", "time": "10 AM"})
+            r["full"] = _data(await c.call_tool("book_appointment", {"customer_name": "Sam", "service": "haircut", "date": "Friday", "time": "10 AM"}))
+            r["join"] = _data(await c.call_tool("join_waitlist", {"customer_name": "Sam", "service": "haircut", "date": "Friday", "time": "10 AM"}))
+            r["cancel"] = _data(await c.call_tool("cancel_appointment", {"customer_name": "Ana"}))
+            r["summary"] = _data(await c.call_tool("daily_summary", {"date": "Friday"}))
+        return r
+
+    r = anyio.run(run)
+    assert not r["full"]["ok"] and "waitlist" in r["full"]["speech"]
+    assert r["join"]["ok"] and "waitlist" in r["join"]["speech"] and "10 AM" in r["join"]["speech"]
+    filled = r["cancel"]["filled_from_waitlist"]
+    assert len(filled) == 1 and filled[0]["customer"] == "Sam" and filled[0]["start"] == "2026-10-23T10:00"
+    assert filled[0]["source"] == "waitlist"
+    assert "Sam" not in r["cancel"]["speech"]  # the person cancelling isn't told who got the slot
+    assert "waitlist already filled 1" in r["summary"]["speech"]
+    with urllib.request.urlopen(server + "/api/week?start=2026-10-23&days=1") as resp:
+        day = json.loads(resp.read())["days"][0]
+    assert day["waitlist"][0]["status"] == "booked"
+    assert any(a["customer"] == "Sam" and a["source"] == "waitlist" for a in day["appointments"])
+
+
+def test_returning_customer_and_owner_block(tmp_path):
+    proc, base = _start(tmp_path, FRONTDESK_DEMO="1")
+    try:
+        async def run():
+            r = {}
+            async with Client(base + "/mcp", mode="legacy") as c:
+                r["sam"] = _data(await c.call_tool("customer_history", {"customer_name": "Sam"}))
+                r["new"] = _data(await c.call_tool("customer_history", {"customer_name": "Zoe"}))
+                r["usual"] = _data(await c.call_tool("book_appointment", {"customer_name": "Sam", "service": "the usual", "date": "Friday", "time": "11 AM"}))
+                r["block"] = _data(await c.call_tool("block_time", {"barber": "Diego", "date": "Thursday", "period": "afternoon", "reason": "dentist"}))
+                r["after"] = _data(await c.call_tool("check_availability", {"date": "Thursday", "service": "haircut", "period": "afternoon", "barber": "Diego"}))
+            return r
+
+        r = anyio.run(run)
+        assert r["sam"]["speech"].startswith("Welcome back, Sam! Last time was a beard trim with Diego") and r["sam"]["speech"].endswith("Want the usual?")
+        assert r["sam"]["profile"]["visits"] == 1
+        assert "first visit" in r["new"]["speech"]
+        assert r["usual"]["ok"] and r["usual"]["appointment"]["service"] == "Beard trim" and r["usual"]["appointment"]["staff"] == "Diego"
+        assert r["usual"]["speech"].startswith("You're all set, Sam! Your usual beard trim on Friday")
+        assert r["block"]["ok"] and r["block"]["speech"].startswith("Done. Diego is blocked on Thursday, October 22 from noon to 5 PM")
+        assert not r["after"]["slots"] and "waitlist" in r["after"]["speech"]
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)

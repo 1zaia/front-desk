@@ -14,7 +14,12 @@ A customer says "I need a haircut Friday morning", the server checks the schedul
 | `book_appointment` | Books the slot, checking opening hours and conflicts | "Book a haircut Friday at 9 for John" |
 | `cancel_appointment` | Cancels the customer's next appointment | "Cancel my appointment" |
 | `reschedule_appointment` | Moves it to another day or time, keeping the same barber when possible | "Can you move it to 4 PM?" |
-| `daily_summary` | Owner's summary: customers, expected revenue, next appointment | "How's my day looking?" |
+| `daily_summary` | Owner's summary: customers, expected revenue, next appointment, waitlist and blocked time | "How's my day looking?" |
+| `join_waitlist` | Puts the customer on the waitlist for a day, a period or an exact time; **when someone cancels, the slot is booked for them automatically** | "Put me on the waitlist for 10:30" |
+| `customer_history` | Recognizes a returning customer: visits, usual service and barber, upcoming appointments | "Hi, it's Sam" → "Welcome back, Sam! Want the usual?" |
+| `block_time` | For the owner: takes time off a barber's schedule and flags appointments already in it | "Block Diego's afternoon, he has the dentist" |
+
+`book_appointment` also accepts "the usual" as the service, which books the returning customer's usual service with their usual barber.
 
 Every result has a `speech` field with the short sentence the voice assistant should say, plus structured data (`structuredContent` with an `outputSchema`). Tools are annotated (`readOnlyHint`, `destructiveHint`, `title`) so Alexa+ knows which ones change data.
 The server understands dates like "today", "tomorrow", "Friday", "next Monday", "October 23" and "10/23", and times like "9", "9 AM", "9:30 p.m.", "noon" and "half past 9".
@@ -30,7 +35,7 @@ The Alexa+ developer tools are in closed preview, so the demo uses a simulated A
   - **Follow-up mode:** when the assistant asks a question, it listens again on its own, like Alexa.
   - A level meter shows the mic is really hearing you, and the assistant never listens while it is speaking.
 - `POST /api/conversation`: the agent on **Amazon Bedrock** (Amazon Nova, Converse API with tool use) reads the MCP server's tools (`tools/list`), calls the ones it needs (`tools/call`) and returns the spoken reply plus the list of calls with arguments and latency.
-- `/dashboard`: the week's schedule by barber, refreshing every 1.5 s; new bookings, reschedules and cancellations flash on screen.
+- `/dashboard`: the week's schedule by barber, refreshing every 1.5 s; new bookings, reschedules, cancellations, waitlist fills and blocked time flash on screen.
 - `/demo`: simulator and dashboard side by side, the framing used in the video.
 
 The agent uses the default AWS credentials. If you sign in with `aws login`, botocore needs its `crt` extra (already in `requirements.txt` as `boto3[crt]`). Settings:
@@ -53,7 +58,7 @@ The agent talks to the MCP server over HTTP exactly like Alexa+ would, so the de
 ## Status
 - [x] MCP server at `POST /mcp` (Streamable HTTP, MCP spec 2025-11-25)
 - [x] SQLite schedule with a fictional barbershop
-- [x] Six booking tools, with tests
+- [x] Nine tools, with tests: booking, cancel, reschedule, waitlist with automatic fill, returning customers, owner time blocks, daily summary
 - [x] Voice simulator with the agent on Amazon Bedrock
 - [x] Live owner dashboard
 - [x] AWS deployment (EC2 + HTTPS + IAM role for Nova), published

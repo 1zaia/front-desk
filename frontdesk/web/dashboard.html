@@ -92,6 +92,17 @@
     0% { transform: scale(1.06); box-shadow: 0 0 0 8px var(--fresh); }
     60% { transform: scale(1); }
   }
+  .block {
+    position: absolute; left: 6px; right: 6px; border-radius: 8px; padding: 6px 9px; overflow: hidden;
+    background: repeating-linear-gradient(135deg, #e9ecea 0 7px, #dde2df 7px 14px);
+    color: var(--ink-soft); font-size: 13px; line-height: 1.2; border: 1px dashed var(--line-strong);
+  }
+  .block strong { color: var(--ink); font-weight: 650; }
+  .block.fresh { animation: arrived 2.4s ease-out; box-shadow: 0 0 0 3px var(--fresh); }
+  .tag {
+    display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 650;
+    background: rgba(255,255,255,.92); color: var(--ink); vertical-align: 1px;
+  }
   .now { position: absolute; left: 0; right: 0; border-top: 2px solid var(--red); z-index: 2; pointer-events: none; }
 
   .empty-day { padding: 28px; color: var(--ink-soft); }
@@ -153,11 +164,14 @@
   function detectChanges() {
     const current = new Map();
     for (const d of data.days) for (const a of d.appointments) current.set(a.id, { a, day: d.date });
+    for (const d of data.days) for (const b of d.blocks) current.set(`b${b.id}`, { a: { ...b, status: "blocked", isBlock: true }, day: d.date });
     if (known) {
       let target = null;
       for (const [id, { a, day }] of current) {
         const before = known.get(id);
-        if (!before) { fresh.add(id); target = { day, msg: `New: ${firstName(a)}, ${a.service.toLowerCase()} at ${sayTime(hhmm(a.start))}` }; }
+        if (!before && a.isBlock) { fresh.add(id); target = { day, msg: `Blocked: ${a.staff}, ${sayTime(hhmm(a.start))} to ${sayTime(hhmm(a.end))}` }; }
+        else if (!before && a.source === "waitlist") { fresh.add(id); target = { day, msg: `Filled from the waitlist: ${firstName(a)} got ${sayTime(hhmm(a.start))}` }; }
+        else if (!before) { fresh.add(id); target = { day, msg: `New: ${firstName(a)}, ${a.service.toLowerCase()} at ${sayTime(hhmm(a.start))}` }; }
         else if (before !== signature(a)) {
           fresh.add(id);
           target = { day, msg: a.status === "cancelled" ? `Cancelled: ${firstName(a)} at ${sayTime(hhmm(a.start))}` : `Rescheduled: ${firstName(a)} to ${sayTime(hhmm(a.start))}` };
@@ -200,6 +214,9 @@
     block(String(active.length), active.length === 1 ? "customer booked" : "customers booked");
     block(dollars(revenue), "expected revenue");
     block(next ? `${sayTime(hhmm(next.start))} ${firstName(next)}` : "None", "next up");
+    const waiting = (d.waitlist || []).filter(w => w.status === "waiting").length;
+    const filled = (d.waitlist || []).filter(w => w.status === "booked").length;
+    if (waiting || filled) block(String(waiting), filled ? `on the waitlist · ${filled} filled` : "on the waitlist");
   }
 
   function drawGrid(d) {
@@ -226,6 +243,16 @@
     data.staff.forEach((p, i) => {
       const col = document.createElement("div"); col.className = "staff-col"; col.style.height = `${height}px`;
       for (let m = opens + 30; m < closes; m += 60) { const l = document.createElement("div"); l.className = "half"; l.style.top = `${y(m)}px`; col.append(l); }
+      (d.blocks || []).filter(b => b.staff === p).forEach(b => {
+        const el = document.createElement("div");
+        el.className = "block" + (fresh.has(`b${b.id}`) ? " fresh" : "");
+        const start = mins(hhmm(b.start)), end = mins(hhmm(b.end));
+        el.style.top = `${y(start) + 2}px`; el.style.height = `${Math.max(y(end) - y(start) - 4, 26)}px`;
+        el.innerHTML = "<strong>Blocked</strong> <span></span>";
+        el.querySelector("span").textContent = b.reason ? `· ${b.reason}` : "";
+        el.title = `${p} blocked, ${sayTime(hhmm(b.start))} to ${sayTime(hhmm(b.end))}`;
+        col.append(el);
+      });
       d.appointments.filter(a => a.staff === p)
         .sort((a, b) => (a.status === "cancelled") - (b.status === "cancelled"))
         .reverse()
@@ -239,7 +266,11 @@
           el.style.background = COLORS[i % COLORS.length];
           el.innerHTML = "<strong></strong><span></span>";
           el.querySelector("strong").textContent = a.customer;
-          el.querySelector("span").textContent = `${sayTime(hhmm(a.start))} ${a.service}`;
+          if (a.source === "waitlist" && a.status !== "cancelled") {
+            const tag = document.createElement("span"); tag.className = "tag"; tag.textContent = "from waitlist";
+            el.querySelector("strong").append(tag);
+          }
+          el.querySelector(":scope > span").textContent = `${sayTime(hhmm(a.start))} ${a.service}`;
           el.title = `${a.customer}, ${a.service}, ${sayTime(hhmm(a.start))} to ${sayTime(hhmm(a.end))}`;
           col.append(el);
         });
@@ -256,7 +287,7 @@
     const scroll = g.querySelector(".body")?.scrollTop ?? 0;
     g.replaceChildren(head, body);
     body.scrollTop = scroll;
-    const highlight = body.querySelector(".appt.fresh");
+    const highlight = body.querySelector(".appt.fresh, .block.fresh");
     if (highlight) highlight.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 

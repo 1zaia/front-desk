@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -49,7 +50,19 @@ Rules:
 - Before booking you need the customer's name, the service, the day and the time. If something is missing, ask only for what is missing.
 - Pass dates and times to the tools the way the customer said them (e.g. "Friday", "tomorrow", "9 AM").
 - Keep it short, two sentences at most, friendly and natural to be spoken out loud. No lists, no markdown, no emojis.
-- If the person is the owner asking about the schedule, use daily_summary."""
+- If the customer says their name before booking, use customer_history to greet returning customers; if they want "the usual", book with service "the usual".
+- If the time they want is taken or nothing is open, offer the waitlist and use join_waitlist if they accept.
+- If the person is the owner asking about the schedule, use daily_summary. If the owner wants to take time off a barber's schedule, use block_time."""
+
+
+_THINKING = re.compile(r"<thinking>.*?(</thinking>|$)", re.DOTALL | re.IGNORECASE)
+_TAGS = re.compile(r"</?(thinking|response|answer)>", re.IGNORECASE)
+
+
+def spoken_text(text: str) -> str:
+    """Removes the <thinking>...</thinking> reasoning Nova adds around tool use, so it is never spoken aloud."""
+    text = _TAGS.sub("", _THINKING.sub(" ", text or ""))
+    return re.sub(r"\s+", " ", text).strip()
 
 
 @dataclass
@@ -330,7 +343,7 @@ async def _rounds(target, options, messages, calls, business, converse, used_mod
 
             requests = [c["toolUse"] for c in message["content"] if "toolUse" in c]
             if output.get("stopReason") != "tool_use" or not requests:
-                answer = " ".join(c["text"] for c in message["content"] if "text" in c).strip()
+                answer = spoken_text(" ".join(c["text"] for c in message["content"] if "text" in c))
                 break
 
             results = []

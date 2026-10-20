@@ -145,14 +145,37 @@ def _name(original: str, t: str, waiting_for_name: bool) -> str | None:
 
 def _barber(t: str) -> str | None:
     for name in BARBERS:
-        if re.search(rf"\b{name}\b", t):
+        if re.search(rf"\b{name}s?\b", t):  # "diegos" from "Diego's"
             return name.capitalize()
     return None
 
 
-def _intent(t: str) -> str:
+YES = r"^(yes|yeah|yep|yup|sure|please|ok|okay|sounds good|do it|that works|perfect|great)\b"
+
+
+def _usual(t: str) -> bool:
+    return bool(re.search(r"\b(the usual|my usual|usual|same as last time|same thing|same again)\b", t))
+
+
+def _span(t: str) -> tuple[str | None, str | None]:
+    """'from 1 to 3 pm' -> ('1 pm', '3 pm')."""
+    m = re.search(r"\bfrom (\d{1,2}(?::\d{2})?) ?(am|pm)? (?:to|until|till) (\d{1,2}(?::\d{2})?) ?(am|pm)?\b", t)
+    if not m:
+        return None, None
+    end_suffix = m.group(4) or ""
+    start_suffix = m.group(2) or end_suffix
+    return f"{m.group(1)} {start_suffix}".strip(), f"{m.group(3)} {end_suffix}".strip()
+
+
+def _intent(t: str, st: dict) -> str:
     if re.search(r"\bcancel|\bcall off\b", t):
         return "cancel"
+    if _barber(t) and re.search(r"\bblock|\b(is|will be|s) (off|out)\b|\bday off\b|\btake .* off\b|\bnot (coming|working)\b", t):
+        return "block"
+    if re.search(r"\b(waitlist|wait list|waiting list|put me on|let me know if (something|anything) opens)\b", t):
+        return "waitlist"
+    if st.get("offer") == "waitlist" and re.search(YES, t):
+        return "waitlist"
     if re.search(r"\b(reschedule|move|change|push|switch|another time|different time)\b", t):
         return "reschedule"
     if re.search(r"\b(summary|my day|my schedule|how many (customers|clients|appointments)|how is (today|the day|business)|hows (today|the day|business|my day)|todays schedule|on the books)\b", t):
@@ -181,14 +204,19 @@ async def respond(text: str, session_id: str | None = None, server: Any = None, 
         "service": _service(t), "date": _date(t), "period": _period(t), "time": _time(t),
         "name": _name(text, t, waiting_for_name), "barber": _barber(t),
     }
-    intent = _intent(t)
-    if intent == "book" and st.get("intent") in ("cancel", "reschedule") and not found["service"]:
+    intent = _intent(t, st)
+    if intent == "book" and st.get("intent") in ("cancel", "reschedule", "waitlist") and not found["service"]:
         intent = st["intent"]
+    if _usual(t) or (st.get("offer") == "usual" and re.search(YES, t)):
+        found["service"] = "the usual"
+    if intent == "block":
+        found["name"] = None  # the owner is talking about a barber, not giving a customer name
     for k, v in found.items():
         if v:
             st[k] = v
     st["intent"] = intent
     st.pop("pending", None)
+    st.pop("offer", None)
 
     try:
         async with Client(target, **options) as mcp:
@@ -222,6 +250,47 @@ async def respond(text: str, session_id: str | None = None, server: Any = None, 
 
 
 async def _decide(st: dict, intent: str, t: str, use) -> str:
+    reply = await _decide_inner(st, intent, t, use)
+    if "waitlist?" in reply or "put you on the waitlist" in reply:
+        st["offer"] = "waitlist"
+    elif reply.endswith("Want the usual?"):
+        st["offer"] = "usual"
+    return reply
+
+
+def _service_for_lookup(st: dict) -> str | None:
+    """The real service name (for availability and the waitlist) when the customer asked for 'the usual'."""
+    if st.get("service") == "the usual":
+        return st.get("usual_service")
+    return st.get("service")
+
+
+async def _decide_inner(st: dict, intent: str, t: str, use) -> str:
+    if intent == "block":
+        start, end = _span(t)
+        r = await use("block_time", {"barber": st.get("barber"), "date": _date(t) or st.get("date") or "today",
+                                     "start_time": start, "end_time": end,
+                                     "period": None if start else _period(t)})
+        st.clear()
+        return r["speech"]
+
+    if intent == "waitlist":
+        service = _service_for_lookup(st)
+        if not service:
+            return "Sure. Which service would you like?"
+        if not st.get("date"):
+            return "Sure. For which day?"
+        if not st.get("name"):
+            st["pending"] = "name"
+            return "Sure. Can I get your name for the waitlist?"
+        r = await use("join_waitlist", {"customer_name": st["name"], "service": service, "date": st["date"],
+                                        "time": st.get("wanted_time") or st.get("time"),
+                                        "period": None if (st.get("wanted_time") or st.get("time")) else st.get("period"),
+                                        "barber": st.get("barber")})
+        if r.get("ok"):
+            _reset(st)
+        return r["speech"]
+
     if intent == "services":
         return (await use("list_services", {}))["speech"]
 
@@ -262,6 +331,16 @@ async def _decide(st: dict, intent: str, t: str, use) -> str:
     # book
     if t and set(t.split()) <= GREETINGS:
         return "Hi there! Want to book an appointment? Just tell me the service and the day."
+    if st.get("name") and not st.get("looked_up") and st.get("service") in (None, "the usual"):
+        # a customer who says their name first: greet them like a regular
+        st["looked_up"] = True
+        r = await use("customer_history", {"customer_name": st["name"]})
+        profile = r.get("profile") or {}
+        if profile.get("customer"):
+            st["name"] = profile["customer"]
+            st["usual_service"] = profile.get("usual_service")
+        if not st.get("service") or not st.get("date"):
+            return r["speech"]
     if not st.get("service"):
         parts = []
         if st.get("date"):
@@ -273,9 +352,9 @@ async def _decide(st: dict, intent: str, t: str, use) -> str:
             return f"Sure! For {' '.join(parts)}, {question}"
         return f"Sure! {question[0].upper()}{question[1:]}"
     if not st.get("date"):
-        return f"What day would you like the {st['service']}?"
+        return f"What day would you like the {'usual' if st['service'] == 'the usual' else st['service']}?"
     if not st.get("time"):
-        r = await use("check_availability", {"date": st["date"], "service": st["service"],
+        r = await use("check_availability", {"date": st["date"], "service": _service_for_lookup(st) or "haircut",
                                              "period": st.get("period"), "barber": st.get("barber")})
         return r["speech"]
     if not st.get("name"):
@@ -286,15 +365,15 @@ async def _decide(st: dict, intent: str, t: str, use) -> str:
     if r.get("ok"):
         _reset(st)
     else:
-        st.pop("time", None)
+        st["wanted_time"] = st.pop("time", None)
     return r["speech"]
 
 
 def _reset(st: dict) -> None:
-    name = st.get("name")
+    """Forgets the finished request, but remembers who the customer is."""
+    keep = {k: st[k] for k in ("name", "looked_up", "usual_service") if st.get(k)}
     st.clear()
-    if name:
-        st["name"] = name
+    st.update(keep)
 
 
 def end_session(session_id: str) -> None:
