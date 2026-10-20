@@ -255,9 +255,10 @@ def cancel_appointment(
             filled = schedule.fill_from_waitlist(conn, freed.date(), moment, freed)
     except BookingError as e:
         return _error(e)
-    # the slot may go straight to someone on the waitlist; the caller isn't told who, the owner sees it on the dashboard
+    # the slot may go straight to someone on the waitlist; the caller isn't told who (not even in the data the
+    # voice agent reads), the owner sees it on the calendar and the live board
     return {"ok": True, "speech": f"Done. I cancelled {_describe(appt, moment.date())}.", "appointment": appt,
-            "filled_from_waitlist": filled}
+            "waitlist_filled": len(filled)}
 
 
 @mcp.tool(title="Reschedule an appointment", annotations=CHANGES)
@@ -286,7 +287,7 @@ def reschedule_appointment(
     except BookingError as e:
         return _error(e)
     return {"ok": True, "speech": f"Done! Your appointment is now {_when(appt, moment.date())}.", "appointment": appt,
-            "filled_from_waitlist": filled}
+            "waitlist_filled": len(filled)}
 
 
 @mcp.tool(title="Join the waitlist", annotations=WRITES)

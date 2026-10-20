@@ -217,10 +217,9 @@ def test_waitlist_fills_a_cancelled_slot(server):
     assert not r["full"]["ok"] and "waitlist" in r["full"]["speech"]
     assert r["join"]["ok"] and "waitlist" in r["join"]["speech"] and "10 AM" in r["join"]["speech"]
     assert r["again"]["waitlist_entry"]["id"] == r["join"]["waitlist_entry"]["id"]  # no duplicate entry
-    filled = r["cancel"]["filled_from_waitlist"]
-    assert len(filled) == 1 and filled[0]["customer"] == "Sam" and filled[0]["start"] == "2026-10-23T10:00"
-    assert filled[0]["source"] == "waitlist"
-    assert "Sam" not in r["cancel"]["speech"]  # the person cancelling isn't told who got the slot
+    assert r["cancel"]["waitlist_filled"] == 1
+    # the person cancelling isn't told who got the slot, not even in the data the voice agent reads
+    assert "Sam" not in json.dumps(r["cancel"])
     assert "waitlist already filled 1" in r["summary"]["speech"]
     with urllib.request.urlopen(server + "/api/week?start=2026-10-23&days=1") as resp:
         day = json.loads(resp.read())["days"][0]
