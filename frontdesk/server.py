@@ -148,16 +148,27 @@ def book_appointment(
             d = schedule.parse_date(date, moment.date())
             h = schedule.parse_time(time)
             b = schedule.find_staff(conn, barber)
+            profile = schedule.customer_profile(conn, customer_name, moment)
+            preferred = None  # the usual barber, used when the customer didn't name one
             if usual:
-                profile = schedule.customer_profile(conn, customer_name, moment)
                 if not profile or not profile["usual_service"]:
                     return {"ok": False, "speech": f"I don't see a previous visit for {customer_name}. Which service would you like?"}
-                customer_name = profile["customer"]
                 s = schedule.find_service(conn, profile["usual_service"])
-                b = b or schedule.find_staff(conn, profile["usual_barber"])
             else:
                 s = schedule.find_service(conn, service)
-            appt = schedule.book(conn, customer_name, s, datetime.combine(d, h), moment, b)
+                # A returning customer asking for their usual service by name ("a beard trim") is also "the usual"
+                usual = bool(profile and profile["visits"] and profile["usual_service"] == s.name)
+            if usual:
+                customer_name = profile["customer"]
+                if not b:
+                    preferred = schedule.find_staff(conn, profile["usual_barber"])
+            start = datetime.combine(d, h)
+            try:
+                appt = schedule.book(conn, customer_name, s, start, moment, b or preferred)
+            except BookingError:
+                if not preferred:
+                    raise
+                appt = schedule.book(conn, customer_name, s, start, moment, None)  # usual barber busy: anyone free
     except BookingError as e:
         if "already taken" in str(e):
             return {"ok": False, "speech": f"{e} I can check other times, or put you on the waitlist."}

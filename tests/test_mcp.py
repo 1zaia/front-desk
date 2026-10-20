@@ -235,6 +235,10 @@ def test_returning_customer_and_owner_block(tmp_path):
                 r["sam"] = _data(await c.call_tool("customer_history", {"customer_name": "Sam"}))
                 r["new"] = _data(await c.call_tool("customer_history", {"customer_name": "Zoe"}))
                 r["usual"] = _data(await c.call_tool("book_appointment", {"customer_name": "Sam", "service": "the usual", "date": "Friday", "time": "11 AM"}))
+                # What Nova actually sent: the usual service by name, with the full name and no barber
+                r["by_name"] = _data(await c.call_tool("book_appointment", {"customer_name": "Sam Torres", "service": "Beard trim", "date": "Friday", "time": "2 PM"}))
+                # Diego busy at 2 PM now: the usual service still books, with whoever is free
+                r["busy"] = _data(await c.call_tool("book_appointment", {"customer_name": "Sam", "service": "beard trim", "date": "Friday", "time": "2 PM"}))
                 r["block"] = _data(await c.call_tool("block_time", {"barber": "Diego", "date": "Thursday", "period": "afternoon", "reason": "dentist"}))
                 r["after"] = _data(await c.call_tool("check_availability", {"date": "Thursday", "service": "haircut", "period": "afternoon", "barber": "Diego"}))
             return r
@@ -245,6 +249,8 @@ def test_returning_customer_and_owner_block(tmp_path):
         assert "first visit" in r["new"]["speech"]
         assert r["usual"]["ok"] and r["usual"]["appointment"]["service"] == "Beard trim" and r["usual"]["appointment"]["staff"] == "Diego"
         assert r["usual"]["speech"].startswith("You're all set, Sam! Your usual beard trim on Friday")
+        assert r["by_name"]["ok"] and r["by_name"]["appointment"]["staff"] == "Diego"
+        assert r["busy"]["ok"] and r["busy"]["appointment"]["staff"] == "Marcus"
         assert r["block"]["ok"] and r["block"]["speech"].startswith("Done. Diego is blocked on Thursday, October 22 from noon to 5 PM")
         assert not r["after"]["slots"] and "waitlist" in r["after"]["speech"]
     finally:
