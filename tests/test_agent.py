@@ -289,3 +289,35 @@ def test_auto_mode_falls_back_to_rehearsal(monkeypatch):
     with TestClient(server.app()) as c:
         r = c.post("/api/conversation", json={"text": "hi"})
     assert r.status_code == 200 and calls == [] and r.json()["notice"]
+
+
+def test_caller_id_fills_in_a_missing_or_partial_phone(monkeypatch):
+    """Nova sometimes leaves the phone out or shortens it ("555-0142"): the caller ID number is used instead."""
+    monkeypatch.setenv("FRONTDESK_DEMO", "1")
+    model = FakeModel([
+        [("customer_history", {"customer_phone": "555-0142"})],
+        [("book_appointment", {"customer_name": "Sam", "service": "the usual", "date": "Friday", "time": "11 AM"})],
+        "You're all set, Sam!",
+    ])
+    context = {"caller_phone": "+13105550142", "caller_name": "Sam Torres", "who": "customer"}
+
+    async def run():
+        r1 = await agent.respond("Hey, it's Sam.", server=_server(), converse=model, context=context)
+        r2 = await agent.respond("Yes, Friday at 11.", session_id=r1["session"], server=_server(), converse=model, context=context)
+        return r1, r2
+
+    r1, r2 = anyio.run(run)
+    assert r1["calls"][0]["arguments"]["customer_phone"] == "+13105550142"
+    assert r1["reply"].startswith("Welcome back, Sam!")
+    booked = r2["calls"][0]
+    assert booked["arguments"]["customer_phone"] == "+13105550142" and booked["ok"]
+    assert "Diego" in booked["speech"]
+    # the caller ID is in the instructions, so the model doesn't ask for it
+    assert "(310) 555-0142" in model.calls[0]["system"][0]["text"] and "Sam Torres" in model.calls[0]["system"][0]["text"]
+
+
+def test_a_full_number_the_customer_gives_is_kept():
+    assert agent._with_caller("book_appointment", {"customer_phone": "(212) 555-0101"}, {"caller_phone": "+13105550142"}) == \
+        {"customer_phone": "(212) 555-0101"}
+    assert agent._with_caller("list_services", {}, {"caller_phone": "+13105550142"}) == {}
+    assert agent._with_caller("book_appointment", {}, {"caller_phone": ""}) == {}

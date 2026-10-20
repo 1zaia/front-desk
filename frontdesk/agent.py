@@ -59,8 +59,10 @@ Rules:
 - When the caller greets you or introduces themselves (e.g. "Hey, it's Sam"), call customer_history (with the caller ID phone number when there is one) and answer with its "speech" as it is. Don't check availability or offer times until they say what they want.
 - If they want "the usual" (or say yes after "Want the usual?"), call book_appointment with service exactly "the usual" and no staff member: the tool picks their usual service and person. Never replace "the usual" with a service or staff name yourself.
 - If the customer asks for one specific time and you already know their name, phone, the service and the day, call book_appointment right away: it books it, or says the time is taken and offers the waitlist.
+- If the customer asks for one specific time (e.g. "today at 10:30"), call book_appointment right away instead of check_availability: it books it, or says the time is taken and offers the waitlist. If you still need their name, ask for it first.
 - If the time they want is taken or nothing is open, offer the waitlist and use join_waitlist only if they accept, passing the time they asked for.
-- To cancel or reschedule, find the booking by the caller's phone number; ask for the name or number only if you don't have one."""
+- To cancel or reschedule, call cancel_appointment or reschedule_appointment right away with the caller ID number; ask for a name or number only when the number is hidden.
+- After block_time or daily_summary, just say the tool's speech; don't offer to call or message anyone."""
 
 CALLER_KNOWN = "Caller ID: {phone}. That number belongs to {name}, a returning {customer}. Use it as customer_phone; don't ask for their name or number."
 CALLER_NEW = "Caller ID: {phone}. It's not in the customer list yet. Use it as customer_phone (don't ask for a number), but ask for their name before booking."
@@ -97,6 +99,20 @@ def _latest_customer_text(messages: list[dict]) -> str:
 def _agreed_to_waitlist(messages: list[dict]) -> bool:
     """True when the customer's latest words ask for (or accept) the waitlist."""
     return bool(_WAITLIST_OK.search(_latest_customer_text(messages)))
+
+
+PHONE_TOOLS = {"book_appointment", "join_waitlist", "customer_history", "cancel_appointment", "reschedule_appointment"}
+
+
+def _with_caller(tool: str, arguments: dict, context: dict) -> dict:
+    """The caller ID number goes into customer tools when the model leaves it out or passes it incomplete,
+    like a phone line would (Alexa+ knows who is calling). A different full number the customer gave is kept."""
+    caller = context.get("caller_phone")
+    if not caller or tool not in PHONE_TOOLS or context.get("who") == "owner":
+        return arguments
+    if schedule.normalize_phone(str(arguments.get("customer_phone") or "")):
+        return arguments
+    return {**arguments, "customer_phone": caller}
 
 
 def _ask_and_wait(tool: str, speech: str) -> bool:
@@ -417,7 +433,7 @@ async def _rounds(target, options, messages, calls, context, converse, used_mode
             results = []
             stop_with = None  # a tool answer that must reach the customer as-is, before the model goes on
             for req in requests:
-                arguments = req.get("input") or {}
+                arguments = _with_caller(req["name"], req.get("input") or {}, context)
                 t0 = time.perf_counter()
                 if req["name"] == "join_waitlist" and not _agreed_to_waitlist(messages):
                     # Nova sometimes signs people up without asking: hand it back so it asks first
