@@ -41,21 +41,35 @@ MAX_ROUNDS = 6  # model -> tool round trips per utterance
 MAX_HISTORY = 20  # messages kept per session
 MAX_SESSIONS = 200
 
-INSTRUCTIONS = """You are the virtual receptionist at {business}, a barbershop, answering by voice in American English.
+INSTRUCTIONS = """You are the virtual receptionist at {name}, a {kind}, answering by voice in American English.
+The people who serve {customers} here are called {staff_plural}.
 Today is {today} and the time is {time}.
+{caller}
+{who}
 
 Rules:
 - Always use the tools to look up services, open slots, and to book, cancel, reschedule and read the daily summary. Never make up times, prices or appointments.
 - Every tool returns a "speech" field. Base your answer on it, without adding information the tool did not return.
-- Before booking you need the customer's name, the service, the day and the time. If something is missing, ask only for what is missing.
-- Pass dates and times to the tools the way the customer said them (e.g. "Friday", "tomorrow", "9 AM").
-- Keep it short, two sentences at most, friendly and natural to be spoken out loud. No lists, no markdown, no emojis.
-- When the customer introduces themselves (e.g. "Hey, it's Sam"), call customer_history and answer with its "speech" as it is. Don't check availability or offer times until they say what they want.
-- If they want "the usual" (or say yes after "Want the usual?"), call book_appointment with service exactly "the usual" and no barber: the tool picks their usual service and barber. Never replace "the usual" with a service or barber name yourself.
-- Pass the customer's name exactly as they said it, with spaces.
-- If the customer asks for one specific time and you already know their name, the service and the day, call book_appointment right away: it books it, or says the time is taken and offers the waitlist.
+- Every booking needs the customer's name and phone number, plus the service, the day and the time. Never book without a name and a phone number.
+- Be quick: ask for everything that is missing in ONE short question (e.g. "Sure! Can I get your name and the best phone number?"). If you have everything, book right away.
+- If the customer wants the first available or earliest time, call book_appointment with time "first available" (and the period, if they said one).
+- If they ask for a day or a period without a time, call check_availability and offer the times it returns.
+- Pass dates and times to the tools the way the customer said them (e.g. "Friday", "tomorrow", "9 AM"). Pass names exactly as said, with spaces.
+- Keep it short, two sentences at most, friendly and natural to be spoken out loud. No lists, no markdown, no emojis. Never read a phone number back in full.
+- When the caller greets you or introduces themselves (e.g. "Hey, it's Sam"), call customer_history (with the caller ID phone number when there is one) and answer with its "speech" as it is. Don't check availability or offer times until they say what they want.
+- If they want "the usual" (or say yes after "Want the usual?"), call book_appointment with service exactly "the usual" and no staff member: the tool picks their usual service and person. Never replace "the usual" with a service or staff name yourself.
+- If the customer asks for one specific time and you already know their name, phone, the service and the day, call book_appointment right away: it books it, or says the time is taken and offers the waitlist.
 - If the time they want is taken or nothing is open, offer the waitlist and use join_waitlist only if they accept, passing the time they asked for.
-- If the person is the owner asking about the schedule, use daily_summary. If the owner wants to take time off a barber's schedule, use block_time."""
+- To cancel or reschedule, find the booking by the caller's phone number; ask for the name or number only if you don't have one."""
+
+CALLER_KNOWN = "Caller ID: {phone}. That number belongs to {name}, a returning {customer}. Use it as customer_phone; don't ask for their name or number."
+CALLER_NEW = "Caller ID: {phone}. It's not in the customer list yet. Use it as customer_phone (don't ask for a number), but ask for their name before booking."
+CALLER_HIDDEN = "The caller's number is hidden: ask for their name and phone number before booking."
+WHO = {
+    "owner": "You are talking to the owner. They can ask for the daily summary (daily_summary) and block time off someone's schedule (block_time), and book for customers.",
+    "customer": "You are talking to a customer. Never use daily_summary or block_time.",
+    "either": "This is the public demo line: the person may be a customer or the owner. If they say they're the owner, or ask how the day looks, use daily_summary; if they want to take time off someone's schedule, use block_time.",
+}
 
 
 _THINKING = re.compile(r"<thinking>.*?(</thinking>|$)", re.DOTALL | re.IGNORECASE)
@@ -279,18 +293,32 @@ def _call_model(converse, **kwargs) -> tuple[dict, str]:
     raise last_error  # type: ignore[misc]
 
 
-def _instructions(business: str) -> str:
+def _instructions(context: dict) -> str:
     moment = schedule.now()
+    phone = context.get("caller_phone") or ""
+    known = context.get("caller_name")
+    if phone and known:
+        caller = CALLER_KNOWN.format(phone=schedule.format_phone(phone), name=known, customer=context.get("customer_noun", "customer"))
+    elif phone:
+        caller = CALLER_NEW.format(phone=schedule.format_phone(phone))
+    else:
+        caller = CALLER_HIDDEN
     return INSTRUCTIONS.format(
-        business=business,
+        name=context.get("name", "the business"),
+        kind=context.get("type_label", "small business").lower(),
+        customers=f"{context.get('customer_noun', 'customer')}s",
+        staff_plural=context.get("staff_plural", "team members"),
         today=f"{schedule.WEEKDAY_NAMES[moment.weekday()]}, {schedule.MONTH_NAMES[moment.month - 1]} {moment.day}, {moment.year}",
         time=schedule.say_time(moment.time()),
+        caller=caller,
+        who=WHO.get(context.get("who", "customer"), WHO["customer"]),
     )
 
 
 def default_mcp_target():
-    """The agent's MCP server: a URL, or "local" to use the in-process server (no HTTP)."""
-    url = os.environ.get("FRONTDESK_MCP_URL") or f"http://127.0.0.1:{os.environ.get('PORT', '8000')}/mcp"
+    """The agent's MCP server: the in-process server of the business being served (default), or a URL
+    from FRONTDESK_MCP_URL (e.g. to test the agent against another deployment)."""
+    url = os.environ.get("FRONTDESK_MCP_URL", "local")
     if url == "local":
         from frontdesk.server import mcp
         return mcp
@@ -313,12 +341,16 @@ async def respond(
     server: Any = None,
     business: str = "Main Street Barbers",
     converse=None,
+    context: dict | None = None,
 ) -> dict:
     """Handles one customer utterance and returns the agent's answer with the tool calls.
 
-    `server` is the MCP server URL (default: FRONTDESK_MCP_URL) or an in-memory MCPServer (tests).
+    `server` is the MCP server URL or an in-memory MCPServer (default: the in-process server).
+    `context` describes the business and the caller (see _instructions); `business` is a shortcut for its name.
     `converse` replaces the Bedrock call (tests).
     """
+    context = {"name": business, "type_label": "barbershop", "staff_plural": "barbers", "customer_noun": "customer",
+               "who": "either", **(context or {})}
     text = (text or "").strip()
     if not text:
         raise ValueError("Empty utterance.")
@@ -333,7 +365,7 @@ async def respond(
     t_total = time.perf_counter()
 
     try:
-        answer, ms_model, ms_tools_list = await _rounds(target, options, messages, calls, business, converse, used_models)
+        answer, ms_model, ms_tools_list = await _rounds(target, options, messages, calls, context, converse, used_models)
     except BaseException as e:
         root = _root(e)
         if isinstance(root, (KeyboardInterrupt, SystemExit, anyio.get_cancelled_exc_class())):
@@ -354,7 +386,7 @@ async def respond(
     }
 
 
-async def _rounds(target, options, messages, calls, business, converse, used_models) -> tuple[str, int, int]:
+async def _rounds(target, options, messages, calls, context, converse, used_models) -> tuple[str, int, int]:
     ms_model = 0
     answer = ""
     async with Client(target, **options) as mcp_client:
@@ -367,7 +399,7 @@ async def _rounds(target, options, messages, calls, business, converse, used_mod
             t0 = time.perf_counter()
             output, used = await anyio.to_thread.run_sync(lambda: _call_model(
                 converse,
-                system=[{"text": _instructions(business)}],
+                system=[{"text": _instructions(context)}],
                 messages=messages,
                 toolConfig={"tools": tools},
                 inferenceConfig={"maxTokens": 400, "temperature": 0.2},

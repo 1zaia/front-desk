@@ -89,12 +89,12 @@ def test_full_conversation(server):
         async with Client(server + "/mcp", mode="legacy") as c:
             r["services"] = _data(await c.call_tool("list_services", {}))
             r["open"] = _data(await c.call_tool("check_availability", {"date": "Friday", "service": "haircut", "period": "morning"}))
-            r["book"] = _data(await c.call_tool("book_appointment", {"customer_name": "john", "service": "haircut", "date": "Friday", "time": "9 AM"}))
-            r["taken"] = _data(await c.call_tool("book_appointment", {"customer_name": "Ana", "service": "haircut", "date": "Friday", "time": "9 AM", "barber": r["book"]["appointment"]["staff"]}))
+            r["book"] = _data(await c.call_tool("book_appointment", {"customer_phone": "3105550200", "customer_name": "john", "service": "haircut", "date": "Friday", "time": "9 AM"}))
+            r["taken"] = _data(await c.call_tool("book_appointment", {"customer_phone": "3105550201", "customer_name": "Ana", "service": "haircut", "date": "Friday", "time": "9 AM", "staff": r["book"]["appointment"]["staff"]}))
             r["summary"] = _data(await c.call_tool("daily_summary", {"date": "Friday"}))
             r["reschedule"] = _data(await c.call_tool("reschedule_appointment", {"customer_name": "john", "new_date": "Friday", "new_time": "4 PM"}))
             r["cancel"] = _data(await c.call_tool("cancel_appointment", {"customer_name": "John"}))
-            r["sunday"] = _data(await c.call_tool("book_appointment", {"customer_name": "Ana", "service": "beard", "date": "Sunday", "time": "10 AM"}))
+            r["sunday"] = _data(await c.call_tool("book_appointment", {"customer_phone": "3105550202", "customer_name": "Ana", "service": "beard", "date": "Sunday", "time": "10 AM"}))
         return r
 
     r = anyio.run(run)
@@ -189,14 +189,14 @@ def test_public_host_allowed(tmp_path):
 
 def test_rate_limit_per_ip(monkeypatch):
     from types import SimpleNamespace
-    from frontdesk import server
-    monkeypatch.setattr(server, "RATE_PER_IP", 3)
-    server._utterances_by_ip.clear()
+    from frontdesk import web_api
+    monkeypatch.setattr(web_api, "RATE_PER_IP", 3)
+    web_api._utterances_by_ip.clear()
     request = SimpleNamespace(headers={"x-forwarded-for": "203.0.113.9"}, client=None)
-    assert [server._within_limits(request) for _ in range(4)] == [True, True, True, False]
+    assert [web_api._within_limits(request) for _ in range(4)] == [True, True, True, False]
     other = SimpleNamespace(headers={"x-forwarded-for": "198.51.100.7"}, client=None)
-    assert server._within_limits(other)
-    server._utterances_by_ip.clear()
+    assert web_api._within_limits(other)
+    web_api._utterances_by_ip.clear()
 
 
 def test_waitlist_fills_a_cancelled_slot(server):
@@ -205,10 +205,10 @@ def test_waitlist_fills_a_cancelled_slot(server):
         r = {}
         async with Client(server + "/mcp", mode="legacy") as c:
             for name in ("Ana", "Bea"):
-                await c.call_tool("book_appointment", {"customer_name": name, "service": "haircut", "date": "Friday", "time": "10 AM"})
-            r["full"] = _data(await c.call_tool("book_appointment", {"customer_name": "Sam", "service": "haircut", "date": "Friday", "time": "10 AM"}))
-            r["join"] = _data(await c.call_tool("join_waitlist", {"customer_name": "Sam", "service": "haircut", "date": "Friday", "time": "10 AM"}))
-            r["again"] = _data(await c.call_tool("join_waitlist", {"customer_name": "sam", "service": "haircut", "date": "Friday", "time": "10 AM"}))
+                await c.call_tool("book_appointment", {"customer_phone": "3105550203", "customer_name": name, "service": "haircut", "date": "Friday", "time": "10 AM"})
+            r["full"] = _data(await c.call_tool("book_appointment", {"customer_phone": "3105550204", "customer_name": "Sam", "service": "haircut", "date": "Friday", "time": "10 AM"}))
+            r["join"] = _data(await c.call_tool("join_waitlist", {"customer_phone": "3105550204", "customer_name": "Sam", "service": "haircut", "date": "Friday", "time": "10 AM"}))
+            r["again"] = _data(await c.call_tool("join_waitlist", {"customer_phone": "3105550204", "customer_name": "sam", "service": "haircut", "date": "Friday", "time": "10 AM"}))
             r["cancel"] = _data(await c.call_tool("cancel_appointment", {"customer_name": "Ana"}))
             r["summary"] = _data(await c.call_tool("daily_summary", {"date": "Friday"}))
         return r
@@ -236,13 +236,13 @@ def test_returning_customer_and_owner_block(tmp_path):
             async with Client(base + "/mcp", mode="legacy") as c:
                 r["sam"] = _data(await c.call_tool("customer_history", {"customer_name": "Sam"}))
                 r["new"] = _data(await c.call_tool("customer_history", {"customer_name": "Zoe"}))
-                r["usual"] = _data(await c.call_tool("book_appointment", {"customer_name": "Sam", "service": "the usual", "date": "Friday", "time": "11 AM"}))
+                r["usual"] = _data(await c.call_tool("book_appointment", {"customer_phone": "3105550142", "customer_name": "Sam", "service": "the usual", "date": "Friday", "time": "11 AM"}))
                 # What Nova actually sent: the usual service by name, with the full name and no barber
-                r["by_name"] = _data(await c.call_tool("book_appointment", {"customer_name": "Sam Torres", "service": "Beard trim", "date": "Friday", "time": "2 PM"}))
+                r["by_name"] = _data(await c.call_tool("book_appointment", {"customer_phone": "3105550142", "customer_name": "Sam Torres", "service": "Beard trim", "date": "Friday", "time": "2 PM"}))
                 # Diego busy at 2 PM now: the usual service still books, with whoever is free
-                r["busy"] = _data(await c.call_tool("book_appointment", {"customer_name": "Sam", "service": "beard trim", "date": "Friday", "time": "2 PM"}))
-                r["block"] = _data(await c.call_tool("block_time", {"barber": "Diego", "date": "Thursday", "period": "afternoon", "reason": "dentist"}))
-                r["after"] = _data(await c.call_tool("check_availability", {"date": "Thursday", "service": "haircut", "period": "afternoon", "barber": "Diego"}))
+                r["busy"] = _data(await c.call_tool("book_appointment", {"customer_phone": "3105550142", "customer_name": "Sam", "service": "beard trim", "date": "Friday", "time": "2 PM"}))
+                r["block"] = _data(await c.call_tool("block_time", {"staff": "Diego", "date": "Thursday", "period": "afternoon", "reason": "dentist"}))
+                r["after"] = _data(await c.call_tool("check_availability", {"date": "Thursday", "service": "haircut", "period": "afternoon", "staff": "Diego"}))
             return r
 
         r = anyio.run(run)

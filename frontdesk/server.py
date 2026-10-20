@@ -1,48 +1,56 @@
-"""Front Desk MCP server: a voice receptionist for small businesses.
+"""Front Desk MCP server: a voice receptionist for any appointment-based small business.
 
-Transport: Streamable HTTP at POST /mcp (MCP spec 2025-11-25 or later).
+Transport: Streamable HTTP (MCP spec 2025-11-25 or later).
+- POST /b/<business>/mcp  one business (e.g. /b/main-street-barbers/mcp)
+- POST /mcp               the public demo business
+Customer tools are open, like a phone line. Owner tools (daily_summary, block_time) need the business's
+API key as "Authorization: Bearer <key>" (created in the owner app), except on the public demo.
+
 Every tool returns a "speech" field with the short sentence the voice assistant should say,
 plus structured data for anything that wants to show it on screen.
 """
 from __future__ import annotations
 
-import logging
+import json
 import os
-import time
-from datetime import date, datetime, timedelta
-from pathlib import Path
+import re
+from datetime import date, datetime
 from typing import Annotated, Any
 
 from pydantic import Field
-from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, RedirectResponse
 
 from mcp.server import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp_types import ToolAnnotations
 
-from frontdesk import agent, db, rehearsal, schedule
+from frontdesk import db, schedule, tenancy
 from frontdesk.schedule import BookingError
 
 mcp = MCPServer(
     name="front-desk",
     title="Front Desk",
-    version="0.4.0",
+    version="0.5.0",
     instructions=(
-        "You are the receptionist of a small business (a barbershop). Use the tools to look up "
-        "services and open slots, to book, cancel and reschedule appointments, to put customers on the waitlist "
-        "and to recognize returning customers. The owner can also block time and ask for the daily summary. "
-        "Always confirm the customer's name before booking. Reply with the sentence in the 'speech' field, short and natural for voice."
+        "You are the receptionist of a small appointment-based business (a barbershop, salon, clinic, studio...). "
+        "Use the tools to look up services and open slots, to book, cancel and reschedule appointments, to put "
+        "customers on the waitlist and to recognize returning customers by phone number. Every booking needs the "
+        "customer's name and phone number. The owner can also block time and ask for the daily summary. "
+        "Reply with the sentence in the 'speech' field, short and natural for voice."
     ),
 )
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False)
+WRITES = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
+CHANGES = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False)
+FIRST_AVAILABLE = {"first available", "first", "earliest", "asap", "soonest", "next available", "any time", "anytime",
+                   "whenever", "first open", "first opening", "the earliest"}
+OWNER_ONLY = {"ok": False, "speech": "Sorry, only the owner can do that."}
 
 
 def _conn():
     conn = db.connect()
     db.init_db(conn)
-    if os.environ.get("FRONTDESK_DEMO", "1") != "0":
+    if tenancy.current().public_demo and os.environ.get("FRONTDESK_DEMO", "1") != "0":
         schedule.seed_demo(conn, schedule.now().date())
     return conn
 
@@ -61,34 +69,51 @@ def _describe(a: dict, today: date) -> str:
     return f"{first_name}'s {a['service'].lower()} {_when(a, today)}"
 
 
+def _hhmm(iso: str) -> str:
+    return schedule.say_time(datetime.fromisoformat(iso).time())
+
+
+def _first_available(text: str | None) -> bool:
+    return schedule.normalize(text or "").strip(" .!") in FIRST_AVAILABLE
+
+
+def _who(name: str | None, phone: str | None) -> str:
+    return (name or "").strip() or schedule.say_phone(schedule.normalize_phone(phone))
+
+
 @mcp.tool(title="List services and prices", annotations=READ_ONLY)
 def list_services() -> dict[str, Any]:
-    """Lists the services the business offers, with duration and price."""
+    """Lists the services the business offers (duration and price) and who works there."""
     with _conn() as conn:
         services = db.list_services(conn)
         business = db.business_name(conn)
-    items = [f"a {s['name'].lower()} for {schedule.dollars(s['price_cents'])}" for s in services]
+        team = [p.name for p in schedule.all_staff(conn)]
+        words = schedule.staff_words(conn)
+    items = [f"{schedule.a_service(s['name'])} for {schedule.dollars(s['price_cents'])}" if s["price_cents"]
+             else f"{schedule.a_service(s['name'])} (free)" for s in services]
     return {
         "ok": True,
         "speech": f"At {business} we offer {schedule.join_and(items)}.",
         "services": services,
+        "team": team,
+        "staff_noun": words["staff"],
     }
 
 
 @mcp.tool(title="Check open slots", annotations=READ_ONLY)
 def check_availability(
     date: Annotated[str, Field(description="Requested day: 2026-10-23, October 23, today, tomorrow or a weekday (e.g. Friday).")],
-    service: Annotated[str, Field(description="Service name, e.g. haircut, beard trim, haircut and beard.")],
+    service: Annotated[str, Field(description="Service name, as listed by list_services.")],
     period: Annotated[str | None, Field(description="Optional: morning, afternoon or evening.")] = None,
-    barber: Annotated[str | None, Field(description="Optional: name of the preferred barber.")] = None,
+    staff: Annotated[str | None, Field(description="Optional: name of the preferred staff member (barber, stylist, therapist...).")] = None,
 ) -> dict[str, Any]:
-    """Shows the open start times for a service on a day, optionally by period and barber."""
+    """Shows the first open start times for a service on a day, optionally by period and staff member."""
     moment = schedule.now()
     try:
         with _conn() as conn:
             d = schedule.parse_date(date, moment.date())
             s = schedule.find_service(conn, service)
-            b = schedule.find_staff(conn, barber)
+            b = schedule.find_staff(conn, staff)
             is_open = schedule.hours_for(conn, d) is not None
             slots = schedule.open_slots(conn, d, s, moment, period, b) if is_open else []
     except BookingError as e:
@@ -109,7 +134,7 @@ def check_availability(
     if not slots:
         return {
             "ok": True,
-            "speech": f"Sorry, there's nothing open for a {s.name.lower()} {when}{part}{with_whom}. Want me to put you on the waitlist?",
+            "speech": f"Sorry, there's nothing open for {schedule.a_service(s.name)} {when}{part}{with_whom}. Want me to put you on the waitlist?",
             "date": d.isoformat(), "service": s.name, "slots": [],
         }
     times: list[str] = []
@@ -119,62 +144,77 @@ def check_availability(
     spoken = [schedule.say_time(datetime.strptime(t, "%H:%M").time()) for t in times[:3]]
     return {
         "ok": True,
-        "speech": f"For a {s.name.lower()} {when}{part}{with_whom}, I have {schedule.join_or(spoken)}. Which works best?",
+        "speech": f"For {schedule.a_service(s.name)} {when}{part}{with_whom}, I have {schedule.join_or(spoken)}. Which works best?",
         "date": d.isoformat(),
         "service": s.name,
         "slots": slots,
     }
 
 
-@mcp.tool(
-    title="Book an appointment",
-    annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False),
-)
+@mcp.tool(title="Book an appointment", annotations=WRITES)
 def book_appointment(
-    customer_name: Annotated[str, Field(description="Customer's name.")],
-    service: Annotated[str, Field(description="Service name.")],
+    customer_name: Annotated[str, Field(description="Customer's name. Always required.")],
+    customer_phone: Annotated[str, Field(description="Customer's phone number (caller ID or as they said it). Always required.")],
+    service: Annotated[str, Field(description="Service name, or \"the usual\" for a returning customer.")],
     date: Annotated[str, Field(description="Day: 2026-10-23, October 23, today, tomorrow or a weekday.")],
-    time: Annotated[str, Field(description="Start time, e.g. 9 AM, 9:30, 2:30 PM.")],
-    barber: Annotated[str | None, Field(description="Optional: requested barber.")] = None,
+    time: Annotated[str, Field(description="Start time, e.g. 9 AM, 9:30, 2:30 PM, or \"first available\".")],
+    staff: Annotated[str | None, Field(description="Optional: requested staff member.")] = None,
+    period: Annotated[str | None, Field(description="Optional, with \"first available\": morning, afternoon or evening.")] = None,
+    notes: Annotated[str | None, Field(description="Optional: anything the business should know.")] = None,
 ) -> dict[str, Any]:
-    """Books an appointment. Checks opening hours and that the slot is free before saving.
+    """Books an appointment after checking hours and that the slot is free. Needs the customer's name and phone.
 
-    For a returning customer, service can be "the usual": it books their usual service with their usual barber.
+    For a returning customer, service can be "the usual": it books their usual service with their usual staff member.
+    time can be "first available" to take the earliest open slot that day (optionally in a period).
     """
     moment = schedule.now()
+    if not (customer_name or "").strip():
+        return {"ok": False, "speech": "Can I get your name for the booking?"}
+    if not schedule.normalize_phone(customer_phone):
+        return {"ok": False, "speech": "And what's the best phone number for the booking?"}
     usual = schedule.is_usual(service)
     try:
         with _conn() as conn:
             d = schedule.parse_date(date, moment.date())
-            h = schedule.parse_time(time)
-            b = schedule.find_staff(conn, barber)
-            profile = schedule.customer_profile(conn, customer_name, moment)
-            preferred = None  # the usual barber, used when the customer didn't name one
+            b = schedule.find_staff(conn, staff)
+            profile = schedule.customer_profile(conn, customer_name, moment, phone=customer_phone)
+            preferred = None  # their usual staff member, used when they didn't name one
             if usual:
                 if not profile or not profile["usual_service"]:
                     return {"ok": False, "speech": f"I don't see a previous visit for {customer_name}. Which service would you like?"}
                 s = schedule.find_service(conn, profile["usual_service"])
             else:
                 s = schedule.find_service(conn, service)
-                # A returning customer asking for their usual service by name ("a beard trim") is also "the usual"
+                # a returning customer asking for their usual service by name ("a beard trim") is also "the usual"
                 usual = bool(profile and profile["visits"] and profile["usual_service"] == s.name)
             if usual:
-                customer_name = profile["customer"]
+                if profile["customer"] and schedule.same_person(customer_name, profile["customer"]):
+                    customer_name = profile["customer"]
                 if not b:
-                    preferred = schedule.find_staff(conn, profile["usual_barber"])
-            start = datetime.combine(d, h)
+                    preferred = schedule.find_staff(conn, profile["usual_staff"])
+            if _first_available(time):
+                slots = schedule.open_slots(conn, d, s, moment, period, b)
+                if preferred and any(x["staff"] == preferred.name for x in slots):
+                    slots = [x for x in slots if x["staff"] == preferred.name]
+                if not slots:
+                    when = schedule.say_date_on(d, moment.date())
+                    return {"ok": False, "speech": f"Sorry, there's nothing open for {schedule.a_service(s.name)} {when}. Want me to put you on the waitlist?"}
+                start = datetime.combine(d, datetime.strptime(slots[0]["time"], "%H:%M").time())
+                b = b or schedule.find_staff(conn, slots[0]["staff"])
+            else:
+                start = datetime.combine(d, schedule.parse_time(time))
             try:
-                appt = schedule.book(conn, customer_name, s, start, moment, b or preferred)
+                appt = schedule.book(conn, customer_name, s, start, moment, b or preferred, phone=customer_phone, notes=notes or "")
             except BookingError:
                 if not preferred:
                     raise
-                appt = schedule.book(conn, customer_name, s, start, moment, None)  # usual barber busy: anyone free
+                appt = schedule.book(conn, customer_name, s, start, moment, None, phone=customer_phone, notes=notes or "")
     except BookingError as e:
         if "already taken" in str(e):
             return {"ok": False, "speech": f"{e} I can check other times, or put you on the waitlist."}
         return _error(e)
     first = appt["customer"].split()[0]
-    what = f"your usual {appt['service'].lower()}" if usual else f"a {appt['service'].lower()}"
+    what = f"your usual {appt['service'].lower()}" if usual else schedule.a_service(appt["service"])
     return {
         "ok": True,
         "speech": f"You're all set, {first}! {what[0].upper()}{what[1:]} {_when(appt, moment.date())}.",
@@ -182,26 +222,35 @@ def book_appointment(
     }
 
 
-@mcp.tool(
-    title="Cancel an appointment",
-    annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False),
-)
+def _one_appointment(conn, name: str | None, phone: str | None, moment: datetime, d: date | None, verb: str):
+    found = schedule.find_appointments(conn, name, moment, d, phone=phone)
+    if not found and phone and name:  # booked under another number: try the name
+        found = schedule.find_appointments(conn, name, moment, d)
+    if not found:
+        return None, {"ok": False, "speech": f"I couldn't find an upcoming appointment for {_who(name, phone)}."}
+    if len(found) > 1 and d is None:
+        options = "; ".join(_describe(a, moment.date()) for a in found[:3])
+        return None, {"ok": False, "speech": f"I found more than one: {options}. Which one should I {verb}?", "appointments": found}
+    return found[0], None
+
+
+@mcp.tool(title="Cancel an appointment", annotations=CHANGES)
 def cancel_appointment(
-    customer_name: Annotated[str, Field(description="Customer's name.")],
+    customer_phone: Annotated[str | None, Field(description="Customer's phone number (preferred way to find the booking).")] = None,
+    customer_name: Annotated[str | None, Field(description="Customer's name.")] = None,
     date: Annotated[str | None, Field(description="Optional: day of the appointment, if the customer has more than one.")] = None,
 ) -> dict[str, Any]:
-    """Cancels the customer's next appointment (or the one on the given day)."""
+    """Cancels the customer's next appointment (or the one on the given day). If someone is on the waitlist, the slot goes to them."""
     moment = schedule.now()
+    if not (customer_name or customer_phone):
+        return {"ok": False, "speech": "Sure. What name or phone number is the appointment under?"}
     try:
         with _conn() as conn:
             d = schedule.parse_date(date, moment.date()) if date else None
-            found = schedule.find_appointments(conn, customer_name, moment, d)
-            if not found:
-                return {"ok": False, "speech": f"I couldn't find an appointment for {customer_name}."}
-            if len(found) > 1 and d is None:
-                options = "; ".join(_describe(a, moment.date()) for a in found[:3])
-                return {"ok": False, "speech": f"I found more than one: {options}. Which one should I cancel?", "appointments": found}
-            appt = schedule.cancel(conn, found[0]["id"])
+            found, problem = _one_appointment(conn, customer_name, customer_phone, moment, d, "cancel")
+            if problem:
+                return problem
+            appt = schedule.cancel(conn, found["id"])
             freed = datetime.fromisoformat(appt["start"])
             filled = schedule.fill_from_waitlist(conn, freed.date(), moment, freed)
     except BookingError as e:
@@ -211,32 +260,28 @@ def cancel_appointment(
             "filled_from_waitlist": filled}
 
 
-@mcp.tool(
-    title="Reschedule an appointment",
-    annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False),
-)
+@mcp.tool(title="Reschedule an appointment", annotations=CHANGES)
 def reschedule_appointment(
-    customer_name: Annotated[str, Field(description="Customer's name.")],
     new_time: Annotated[str, Field(description="New time, e.g. 4 PM.")],
+    customer_phone: Annotated[str | None, Field(description="Customer's phone number (preferred way to find the booking).")] = None,
+    customer_name: Annotated[str | None, Field(description="Customer's name.")] = None,
     new_date: Annotated[str | None, Field(description="Optional: new day. Default: same day as the current appointment.")] = None,
     current_date: Annotated[str | None, Field(description="Optional: day of the current appointment, if there is more than one.")] = None,
 ) -> dict[str, Any]:
-    """Moves an appointment to another day or time, keeping the same barber when possible."""
+    """Moves an appointment to another day or time, keeping the same staff member when possible."""
     moment = schedule.now()
+    if not (customer_name or customer_phone):
+        return {"ok": False, "speech": "Sure. What name or phone number is the appointment under?"}
     try:
         with _conn() as conn:
             d_current = schedule.parse_date(current_date, moment.date()) if current_date else None
-            found = schedule.find_appointments(conn, customer_name, moment, d_current)
-            if not found:
-                return {"ok": False, "speech": f"I couldn't find an appointment for {customer_name}."}
-            if len(found) > 1 and d_current is None:
-                options = "; ".join(_describe(a, moment.date()) for a in found[:3])
-                return {"ok": False, "speech": f"I found more than one: {options}. Which one should I move?", "appointments": found}
-            current_day = datetime.fromisoformat(found[0]["start"]).date()
-            day = schedule.parse_date(new_date, moment.date()) if new_date else current_day
+            found, problem = _one_appointment(conn, customer_name, customer_phone, moment, d_current, "move")
+            if problem:
+                return problem
+            old_start = datetime.fromisoformat(found["start"])
+            day = schedule.parse_date(new_date, moment.date()) if new_date else old_start.date()
             new_start = datetime.combine(day, schedule.parse_time(new_time))
-            old_start = datetime.fromisoformat(found[0]["start"])
-            appt = schedule.reschedule(conn, found[0]["id"], new_start, moment)
+            appt = schedule.reschedule(conn, found["id"], new_start, moment)
             filled = schedule.fill_from_waitlist(conn, old_start.date(), moment, old_start)
     except BookingError as e:
         return _error(e)
@@ -244,25 +289,93 @@ def reschedule_appointment(
             "filled_from_waitlist": filled}
 
 
+@mcp.tool(title="Join the waitlist", annotations=WRITES)
+def join_waitlist(
+    customer_name: Annotated[str, Field(description="Customer's name.")],
+    customer_phone: Annotated[str, Field(description="Customer's phone number, to reach them when a spot opens.")],
+    service: Annotated[str, Field(description="Service name.")],
+    date: Annotated[str, Field(description="Day the customer wants.")],
+    time: Annotated[str | None, Field(description="Optional: the exact start time they want, e.g. 10 AM.")] = None,
+    period: Annotated[str | None, Field(description="Optional: morning, afternoon or evening. Default: any time that day.")] = None,
+    staff: Annotated[str | None, Field(description="Optional: preferred staff member.")] = None,
+) -> dict[str, Any]:
+    """Puts the customer on the waitlist when the time they want is full. If someone cancels, the slot is booked for them automatically."""
+    moment = schedule.now()
+    if not schedule.normalize_phone(customer_phone):
+        return {"ok": False, "speech": "Sure. What's the best phone number to reach you if a spot opens up?"}
+    try:
+        with _conn() as conn:
+            d = schedule.parse_date(date, moment.date())
+            s = schedule.find_service(conn, service)
+            b = schedule.find_staff(conn, staff)
+            at = schedule.parse_time(time) if time and not _first_available(time) else None
+            entry = schedule.add_to_waitlist(conn, customer_name, s, d, moment, at=at, period=period, staff=b, phone=customer_phone)
+    except BookingError as e:
+        return _error(e)
+    when = schedule.say_date_on(d, moment.date())
+    if at:
+        window = f" at {schedule.say_time(at)}"
+    elif period:
+        window = f" in the {schedule.PERIOD_ALIASES.get(schedule.normalize(period), schedule.normalize(period))}"
+    else:
+        window = ""
+    first = entry["customer"].split()[0]
+    return {
+        "ok": True,
+        "speech": f"Got it, {first}. You're on the waitlist for {schedule.a_service(entry['service'])} {when}{window}. "
+                  "If a spot opens up, I'll book it for you automatically.",
+        "waitlist_entry": entry,
+    }
+
+
+@mcp.tool(title="Look up a returning customer", annotations=READ_ONLY)
+def customer_history(
+    customer_phone: Annotated[str | None, Field(description="Customer's phone number (caller ID). Preferred.")] = None,
+    customer_name: Annotated[str | None, Field(description="Customer's name, as they said it.")] = None,
+) -> dict[str, Any]:
+    """Finds a returning customer by phone number (or name): visits, usual service and staff member, last visit and upcoming appointments."""
+    moment = schedule.now()
+    with _conn() as conn:
+        profile = schedule.customer_profile(conn, customer_name, moment, phone=customer_phone)
+    if not profile or not profile["visits"]:
+        if profile and profile["upcoming"]:
+            nxt = profile["upcoming"][0]
+            return {"ok": True, "speech": f"Hi {profile['customer'].split()[0]}! You're booked {_when(nxt, moment.date())}.", "profile": profile}
+        greeting = f"Welcome, {customer_name.split()[0].title()}!" if (customer_name or "").strip() else "Welcome!"
+        return {"ok": True, "speech": f"{greeting} Looks like it's your first visit with us.", "profile": profile}
+    first = profile["customer"].split()[0]
+    last = datetime.fromisoformat(profile["last_visit"]).date()
+    speech = (f"Welcome back, {first}! Last time was {schedule.a_service(profile['usual_service'])} with {profile['usual_staff']} "
+              f"on {schedule.MONTH_NAMES[last.month - 1]} {last.day}.")
+    if profile["upcoming"]:
+        speech += f" You're also booked {_when(profile['upcoming'][0], moment.date())}."
+    else:
+        speech += " Want the usual?"
+    return {"ok": True, "speech": speech, "profile": profile}
+
+
 @mcp.tool(title="Owner's daily summary", annotations=READ_ONLY)
 def daily_summary(
     date: Annotated[str | None, Field(description="Optional: day of the summary. Default: today.")] = None,
 ) -> dict[str, Any]:
-    """Summary for the owner: number of customers, next appointment, expected revenue and free time."""
+    """For the owner only: number of customers, next appointment, expected revenue, waitlist and free time."""
+    if not tenancy.is_owner():
+        return OWNER_ONLY
     moment = schedule.now()
     try:
         with _conn() as conn:
             d = schedule.parse_date(date, moment.date()) if date else moment.date()
             r = schedule.daily_summary(conn, d, moment)
+            noun = schedule.staff_words(conn)["customer"]
     except BookingError as e:
         return _error(e)
     when = schedule.say_date(d, moment.date())
     if not r["open"]:
-        return {"ok": True, "speech": f"The shop is closed {schedule.say_date_on(d, moment.date())}.", **r}
+        return {"ok": True, "speech": f"We're closed {schedule.say_date_on(d, moment.date())}.", **r}
     if not r["total_customers"]:
         return {"ok": True, "speech": f"{when.capitalize()} is wide open, with no appointments yet.", **r}
     n = r["total_customers"]
-    count = "1 customer" if n == 1 else f"{n} customers"
+    count = f"1 {noun}" if n == 1 else f"{n} {noun}s"
     parts = [f"{when.capitalize()} you have {count}, with {schedule.dollars(r['expected_revenue_cents'])} expected."]
     if r["next"]:
         parts.append(f"Next up is {_describe(r['next'], moment.date())}.")
@@ -282,86 +395,24 @@ def daily_summary(
     return {"ok": True, "speech": " ".join(parts), **r}
 
 
-def _hhmm(iso: str) -> str:
-    return schedule.say_time(datetime.fromisoformat(iso).time())
-
-
-@mcp.tool(title="Join the waitlist", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
-def join_waitlist(
-    customer_name: Annotated[str, Field(description="Customer's name.")],
-    service: Annotated[str, Field(description="Service name.")],
-    date: Annotated[str, Field(description="Day the customer wants.")],
-    time: Annotated[str | None, Field(description="Optional: the exact start time they want, e.g. 10 AM.")] = None,
-    period: Annotated[str | None, Field(description="Optional: morning, afternoon or evening. Default: any time that day.")] = None,
-    barber: Annotated[str | None, Field(description="Optional: preferred barber.")] = None,
-) -> dict[str, Any]:
-    """Puts the customer on the waitlist when the time they want is full. If someone cancels, the slot is booked for them automatically."""
-    moment = schedule.now()
-    try:
-        with _conn() as conn:
-            d = schedule.parse_date(date, moment.date())
-            s = schedule.find_service(conn, service)
-            b = schedule.find_staff(conn, barber)
-            at = schedule.parse_time(time) if time else None
-            entry = schedule.add_to_waitlist(conn, customer_name, s, d, moment, at=at, period=period, staff=b)
-    except BookingError as e:
-        return _error(e)
-    when = schedule.say_date_on(d, moment.date())
-    if at:
-        window = f" at {schedule.say_time(at)}"
-    elif period:
-        window = f" in the {schedule.PERIOD_ALIASES.get(schedule.normalize(period), schedule.normalize(period))}"
-    else:
-        window = ""
-    first = entry["customer"].split()[0]
-    return {
-        "ok": True,
-        "speech": f"Got it, {first}. You're on the waitlist for a {entry['service'].lower()} {when}{window}. "
-                  "If a spot opens up, I'll book it for you automatically.",
-        "waitlist_entry": entry,
-    }
-
-
-@mcp.tool(title="Look up a returning customer", annotations=READ_ONLY)
-def customer_history(
-    customer_name: Annotated[str, Field(description="Customer's name, as they said it.")],
-) -> dict[str, Any]:
-    """Finds a returning customer: number of visits, usual service and barber, last visit and upcoming appointments."""
-    moment = schedule.now()
-    with _conn() as conn:
-        profile = schedule.customer_profile(conn, customer_name, moment)
-    if not profile or not profile["visits"]:
-        if profile and profile["upcoming"]:
-            nxt = profile["upcoming"][0]
-            return {"ok": True, "speech": f"Hi {profile['customer'].split()[0]}! You're booked {_when(nxt, moment.date())}.", "profile": profile}
-        return {"ok": True, "speech": f"Welcome, {customer_name.split()[0].title()}! Looks like it's your first visit with us.", "profile": None}
-    first = profile["customer"].split()[0]
-    last = datetime.fromisoformat(profile["last_visit"]).date()
-    speech = (f"Welcome back, {first}! Last time was a {profile['usual_service'].lower()} with {profile['usual_barber']} "
-              f"on {schedule.MONTH_NAMES[last.month - 1]} {last.day}.")
-    if profile["upcoming"]:
-        speech += f" You're also booked {_when(profile['upcoming'][0], moment.date())}."
-    else:
-        speech += " Want the usual?"
-    return {"ok": True, "speech": speech, "profile": profile}
-
-
-@mcp.tool(title="Block time off a barber's schedule", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False))
+@mcp.tool(title="Block time off someone's schedule", annotations=WRITES)
 def block_time(
-    barber: Annotated[str, Field(description="Barber whose time is blocked.")],
+    staff: Annotated[str, Field(description="Staff member whose time is blocked.")],
     date: Annotated[str, Field(description="Day to block.")],
     start_time: Annotated[str | None, Field(description="Optional: start of the block, e.g. 1 PM. Default: opening time.")] = None,
     end_time: Annotated[str | None, Field(description="Optional: end of the block, e.g. 3 PM. Default: closing time.")] = None,
     period: Annotated[str | None, Field(description="Optional: morning, afternoon or evening, instead of start and end times.")] = None,
     reason: Annotated[str | None, Field(description="Optional: why, e.g. dentist, day off.")] = None,
 ) -> dict[str, Any]:
-    """For the owner: takes time off a barber's schedule so nobody can book it. Reports appointments already in that time."""
+    """For the owner only: takes time off a staff member's schedule so nobody can book it. Reports appointments already in that time."""
+    if not tenancy.is_owner():
+        return OWNER_ONLY
     moment = schedule.now()
     try:
         with _conn() as conn:
-            b = schedule.find_staff(conn, barber)
+            b = schedule.find_staff(conn, staff)
             if b is None:
-                return {"ok": False, "speech": "Which barber should I block?"}
+                return {"ok": False, "speech": "Whose time should I block?"}
             d = schedule.parse_date(date, moment.date())
             start = schedule.parse_time(start_time) if start_time else None
             end = schedule.parse_time(end_time) if end_time else None
@@ -377,161 +428,52 @@ def block_time(
     return {"ok": True, "speech": speech, "block": block}
 
 
-# ---------------------------------------------------------------- HTTP routes
+# ---------------------------------------------------------------- HTTP app
 
-@mcp.custom_route("/health", methods=["GET"])
-async def health(_: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "server": "front-desk"})
+from frontdesk import web_api  # noqa: E402  (registers the web routes on this server)
 
-
-@mcp.custom_route("/api/schedule", methods=["GET"])
-async def api_schedule(request: Request) -> JSONResponse:
-    """One day of appointments as JSON. Optional parameter: ?date=YYYY-MM-DD."""
-    moment = schedule.now()
-    try:
-        d = schedule.parse_date(request.query_params.get("date", "today"), moment.date())
-    except BookingError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-    with _conn() as conn:
-        items = schedule.appointments_on(conn, d)
-        business = db.business_name(conn)
-    return JSONResponse({"business": business, "date": d.isoformat(), "appointments": items})
+MCP_PATH = re.compile(r"^/b/([a-z0-9-]+)/mcp/?$")
 
 
-@mcp.custom_route("/api/week", methods=["GET"])
-async def api_week(request: Request) -> JSONResponse:
-    """The next days of the schedule for the live dashboard. Optional parameters: ?start=today&days=7."""
-    moment = schedule.now()
-    try:
-        start = schedule.parse_date(request.query_params.get("start", "today"), moment.date())
-        days = max(1, min(14, int(request.query_params.get("days", "7"))))
-    except (BookingError, ValueError) as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-    with _conn() as conn:
-        business = db.business_name(conn)
-        staff = [p.name for p in schedule.all_staff(conn)]
-        listing = []
-        for i in range(days):
-            d = start + timedelta(days=i)
-            window = schedule.hours_for(conn, d)
-            listing.append({
-                "date": d.isoformat(),
-                "weekday": schedule.WEEKDAY_NAMES[d.weekday()],
-                "open": window is not None,
-                "opens": window[0].strftime("%H:%M") if window else None,
-                "closes": window[1].strftime("%H:%M") if window else None,
-                "appointments": schedule.appointments_on(conn, d),
-                "blocks": schedule.blocks_on(conn, d),
-                "waitlist": schedule.waitlist_on(conn, d),
-            })
-    return JSONResponse({
-        "business": business,
-        "now": moment.isoformat(timespec="minutes"),
-        "staff": staff,
-        "days": listing,
-    })
+class TenantMiddleware:
+    """Picks the business from the URL (/b/<slug>/mcp) and checks the owner's API key, for the MCP endpoint."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            path = scope["path"]
+            m = MCP_PATH.match(path)
+            if m:
+                business = tenancy.business_by_slug(m.group(1))
+                if business is None:
+                    return await _json(send, 404, {"error": "No business with that address."})
+                key = _bearer(scope)
+                owner = tenancy.api_key_matches(business, key)
+                if key and not owner:
+                    return await _json(send, 401, {"error": "Invalid API key for this business."})
+                tenancy.set_serving(business, owner)
+                scope = dict(scope, path="/mcp", raw_path=b"/mcp")
+            elif path.rstrip("/") == "/mcp":
+                tenancy.set_serving(tenancy.demo_business(), False)
+        await self.app(scope, receive, send)
 
 
-WEB = Path(__file__).resolve().parent / "web"
-log = logging.getLogger("frontdesk")
-
-RATE_PER_IP = int(os.environ.get("FRONTDESK_RATE_PER_IP", "40"))  # utterances per IP every 10 minutes
-DAILY_LIMIT = int(os.environ.get("FRONTDESK_DAILY_LIMIT", "600"))  # utterances per day for the whole server
-_utterances_by_ip: dict[str, list[float]] = {}
-_utterances_today: dict[str, int] = {}
-_bedrock_down: dict = {"until": 0.0, "notice": ""}  # in auto mode, skip Bedrock for a while after a failure
-
-
-def _within_limits(request: Request) -> bool:
-    """Protects the AWS credits on a public endpoint: per-IP rate limit and a daily cap."""
-    forwarded = request.headers.get("x-forwarded-for", "")
-    ip = forwarded.split(",")[0].strip() or (request.client.host if request.client else "?")
-    t = time.time()
-    recent = [x for x in _utterances_by_ip.get(ip, []) if t - x < 600]
-    day = date.today().isoformat()
-    if len(recent) >= RATE_PER_IP or _utterances_today.get(day, 0) >= DAILY_LIMIT:
-        _utterances_by_ip[ip] = recent
-        return False
-    recent.append(t)
-    _utterances_by_ip[ip] = recent
-    if day not in _utterances_today:  # new day: reset the count
-        _utterances_today.clear()
-    _utterances_today[day] = _utterances_today.get(day, 0) + 1
-    return True
+def _bearer(scope) -> str | None:
+    for k, v in scope.get("headers", []):
+        if k == b"authorization":
+            value = v.decode("latin-1")
+            if value.lower().startswith("bearer "):
+                return value[7:].strip()
+    return None
 
 
-def agent_mode() -> str:
-    return os.environ.get("FRONTDESK_AGENT", "bedrock").strip().lower()
-
-
-@mcp.custom_route("/api/conversation", methods=["POST"])
-async def api_conversation(request: Request) -> JSONResponse:
-    """One customer utterance for the agent on Bedrock. Body: {"text": "...", "session": "optional"}."""
-    if not _within_limits(request):
-        return JSONResponse({"error": "Too many requests in a short time. Please wait a few minutes and try again."}, status_code=429)
-    try:
-        body = await request.json()
-    except ValueError:
-        return JSONResponse({"error": "Invalid JSON body."}, status_code=400)
-    text = str(body.get("text", "")).strip()
-    if not text:
-        return JSONResponse({"error": "Send the customer's words in the 'text' field."}, status_code=400)
-    if len(text) > 500:
-        return JSONResponse({"error": "That message is too long."}, status_code=400)
-    with _conn() as conn:
-        business = db.business_name(conn)
-    mode = agent_mode()
-    session = body.get("session") or None
-    try:
-        if mode == "rehearsal":
-            result = await rehearsal.respond(text, session, business=business)
-        elif mode == "auto" and time.time() < _bedrock_down["until"]:
-            # Bedrock failed recently: don't retry on every utterance, stay in rehearsal mode for a few minutes
-            result = await rehearsal.respond(text, session, business=business)
-            result["notice"] = _bedrock_down["notice"]
-        else:
-            try:
-                result = await agent.respond(text, session, business=business)
-            except agent.AgentError as e:
-                if mode != "auto":
-                    raise
-                # auto mode (used by the deployment): if Bedrock fails, the demo keeps going in rehearsal mode
-                log.warning("Bedrock unavailable, using rehearsal mode: %s", e)
-                _bedrock_down.update(until=time.time() + 300, notice=f"Bedrock is unavailable right now, answering in rehearsal mode. Reason: {e}")
-                result = await rehearsal.respond(text, session, business=business)
-                result["notice"] = _bedrock_down["notice"]
-    except agent.AgentError as e:  # expired credentials, no model access, network: show it instead of hanging
-        log.warning("Agent failure: %s", e, exc_info=e.__cause__)
-        return JSONResponse({"error": str(e)}, status_code=502)
-    return JSONResponse(result)
-
-
-@mcp.custom_route("/api/conversation/{session}", methods=["DELETE"])
-async def api_end_conversation(request: Request) -> JSONResponse:
-    agent.end_session(request.path_params["session"])
-    rehearsal.end_session(request.path_params["session"])
-    return JSONResponse({"ok": True})
-
-
-def _page(name: str):
-    async def route(_: Request) -> FileResponse:
-        return FileResponse(WEB / name, media_type="text/html; charset=utf-8")
-    return route
-
-
-def _redirect(target: str):
-    async def route(_: Request) -> RedirectResponse:
-        return RedirectResponse(target)
-    return route
-
-
-mcp.custom_route("/simulator", methods=["GET"])(_page("simulator.html"))
-mcp.custom_route("/dashboard", methods=["GET"])(_page("dashboard.html"))
-mcp.custom_route("/demo", methods=["GET"])(_page("demo.html"))
-mcp.custom_route("/", methods=["GET"])(_redirect("/demo"))
-# old Portuguese paths from the first version, kept so earlier links still work
-mcp.custom_route("/simulador", methods=["GET"])(_redirect("/simulator"))
-mcp.custom_route("/painel", methods=["GET"])(_redirect("/dashboard"))
+async def _json(send, status: int, body: dict) -> None:
+    data = json.dumps(body).encode()
+    await send({"type": "http.response.start", "status": status,
+                "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(data)).encode())]})
+    await send({"type": "http.response.body", "body": data})
 
 
 def _transport_security() -> TransportSecuritySettings | None:
@@ -551,7 +493,8 @@ def _transport_security() -> TransportSecuritySettings | None:
 
 def app():
     """ASGI app (for uvicorn or the deployment)."""
-    return mcp.streamable_http_app(stateless_http=True, json_response=True, transport_security=_transport_security())
+    inner = mcp.streamable_http_app(stateless_http=True, json_response=True, transport_security=_transport_security())
+    return TenantMiddleware(inner)
 
 
 def main() -> None:
@@ -559,8 +502,10 @@ def main() -> None:
 
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
-    uvicorn.run(app(), host=host, port=port)
+    uvicorn.run(app(), host=host, port=port, proxy_headers=True, forwarded_allow_ips="*")
 
 
 if __name__ == "__main__":
-    main()
+    # run the importable module (not __main__), so the web routes registered by web_api land on the same server
+    from frontdesk.server import main as run
+    run()
