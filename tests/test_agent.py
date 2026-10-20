@@ -100,6 +100,28 @@ def test_tool_error_goes_back_to_the_model():
     assert "closed" in r["reply"]
 
 
+def test_nova_thinking_is_never_spoken():
+    # Real Nova Lite output seen on the deployed server: reasoning wrapped in <thinking> before the answer
+    model = FakeModel([
+        [("list_services", {})],
+        "<thinking> The customer wants the services. I will list them. </thinking>\n\n"
+        "We offer a haircut, a beard trim, and a haircut plus beard.",
+    ])
+    r = anyio.run(lambda: agent.respond("what services do you have?", server=_server(), converse=model))
+    assert r["reply"] == "We offer a haircut, a beard trim, and a haircut plus beard."
+
+
+@pytest.mark.parametrize("raw, spoken", [
+    ("<thinking>plan</thinking> Done!", "Done!"),
+    ("<THINKING>\nmulti\nline\n</THINKING>\nSee you Friday.", "See you Friday."),
+    ("Sure. <thinking>cut off mid-thought", "Sure."),
+    ("<response>All set.</response>", "All set."),
+    ("No tags here.", "No tags here."),
+])
+def test_spoken_text(raw, spoken):
+    assert agent.spoken_text(raw) == spoken
+
+
 def test_empty_utterance():
     with pytest.raises(ValueError):
         anyio.run(lambda: agent.respond("   ", server=_server(), converse=FakeModel([])))
