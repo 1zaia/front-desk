@@ -61,3 +61,13 @@
 - **Severity:** blocking for the AWS Builder mini challenge (the agent on Bedrock can't run)
 - **Workaround:** the agent now tries other Nova models in sequence when one has no quota (Nova Lite, Nova Micro, Nova 2 Lite) and gained a "rehearsal mode" without Bedrock to test the rest of the demo; a case was opened with AWS Support (case 179236335500169, October 18) asking for the quota. The EC2 deployment confirmed the IAM role reaches Bedrock: the error is about quota, not permissions.
 - **Suggestion:** new accounts, especially Free plan accounts with credits, should come with a minimum usable daily quota for the Nova models; the error message should name the Service Quotas quota and link to the increase request; and the Bedrock Playground/console should show "your daily quota is 0" before the developer writes any code.
+- **Update (October 20):** the quota is now live. The deployed server answered with `us.amazon.nova-lite-v1:0` and ran a full check-availability → book → cancel conversation through the MCP tools (1.2–2.0 s per turn). It took about two days from the first call, with no notification on the case at the time of writing; for a hackathon that is a third of the build window.
+
+## Nova Lite speaks its `<thinking>` reasoning as part of the answer
+- **Task:** voice receptionist answering through the Converse API with tool use (`us.amazon.nova-lite-v1:0`, us-east-2); the final text is read aloud by the browser.
+- **Steps:** ask "what services do you have?"; Nova calls the tool and then answers.
+- **Expected:** only the sentence meant for the customer in the final text block.
+- **What happened:** the final text starts with `<thinking> The customer wants... I will tell them. </thinking>` followed by the real answer, in the same `text` block. Nothing in the Converse response separates reasoning from the answer (no `reasoningContent` block), so a voice app reads the reasoning out loud. It showed up on every turn of our first real conversation.
+- **Severity:** high for voice apps (the demo would speak the model's inner monologue)
+- **Workaround:** strip `<thinking>...</thinking>` (including an unclosed tag) from the final text before speaking it; covered by tests.
+- **Suggestion:** return Nova's reasoning as a separate `reasoningContent` block in the Converse API, or add an inference option to turn it off, and document the behavior in the Nova tool-use guide with a voice example.
