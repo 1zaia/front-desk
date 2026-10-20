@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:,">
-<title>Front Desk · Owner dashboard</title>
+<title>Front Desk · Live board</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet">
@@ -130,11 +130,13 @@
 
   <section class="summary" id="summary" aria-live="polite"></section>
 
-  <section class="grid" id="grid" aria-label="Schedule by barber"></section>
+  <section class="grid" id="grid" aria-label="Schedule by team member"></section>
 </main>
 <div class="toast" id="toast" role="status"></div>
 
 <script>
+  // which business: /b/<slug>/board, or the demo barbershop at /dashboard
+  const SLUG = (location.pathname.match(/^\/b\/([a-z0-9-]+)/) || [])[1] || "main-street-barbers";
 (() => {
   const $ = (id) => document.getElementById(id);
   const COLORS = ["var(--red)", "var(--blue)", "#2f6f5e", "#7a4b94"];
@@ -301,7 +303,8 @@
   let last = "";
   async function refresh() {
     try {
-      const r = await fetch("/api/week?days=7", { cache: "no-store" });
+      const r = await fetch(`/api/b/${SLUG}/week?days=7`, { cache: "no-store" });
+      if (r.status === 401) { $("status").textContent = "Sign in as the owner to see this schedule"; location.href = "/login"; return; }
       if (!r.ok) throw new Error(r.status);
       const text = await r.text();
       $("status").classList.remove("offline"); $("status").textContent = "Live";

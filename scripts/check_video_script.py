@@ -23,34 +23,34 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mcp import Client  # noqa: E402
 
-from frontdesk import agent, rehearsal  # noqa: E402
-from frontdesk.server import mcp  # noqa: E402
+from frontdesk import agent, rehearsal, schedule, tenancy  # noqa: E402
+from frontdesk.server import _conn, mcp  # noqa: E402
 
-# (scene, [(line, tools that must be called, what the script expects Front Desk to say)])
+# (scene, caller ID, [(line, tools that must be called, what the script expects Front Desk to say)])
 SCENES = [
-    ("3. A new customer books", [
+    ("3. A new customer books", "+13105550199", [
         ("Hi! Do you have anything for a haircut this morning?", {"check_availability"},
          "For a haircut this morning, I have 9 AM, 9:30 AM, or 10 AM. Which works best?"),
         ("9:30 works. My name is Jordan.", {"book_appointment"},
          "You're all set, Jordan! A haircut today at 9:30 AM with Marcus."),
     ]),
-    ("4. A regular comes back", [
+    ("4. A regular comes back", "+13105550142", [
         ("Hey, it's Sam.", {"customer_history"},
          "Welcome back, Sam! Last time was a beard trim with Diego on October 13. Want the usual?"),
         ("Yes, today at 11.", {"book_appointment"},
          "You're all set, Sam! Your usual beard trim today at 11 AM with Diego."),
     ]),
-    ("5. Full? Join the waitlist", [
+    ("5. Full? Join the waitlist", "+13105550188", [
         ("Can I get a haircut today at 10:30? I'm Nick.", set(),
          "Sorry, 10:30 AM is already taken. I can check other times, or put you on the waitlist."),
         ("Waitlist, please.", {"join_waitlist"},
          "Got it, Nick. You're on the waitlist for a haircut today at 10:30 AM. If a spot opens up, I'll book it for you automatically."),
     ]),
-    ("5b. Leo cancels", [
+    ("5b. Leo cancels", "+13105550177", [
         ("Hi, this is Leo. I need to cancel my appointment.", {"cancel_appointment"},
          "Done. I cancelled Leo's haircut today at 10:30 AM with Marcus."),
     ]),
-    ("6. The owner", [
+    ("6. The owner", "", [
         ("Block Diego's afternoon, he has a dentist appointment.", {"block_time"},
          "Done. Diego is blocked today from noon to 5 PM. Heads up: Kevin at 3:30 PM is still booked in that time."),
         ("How's my day looking?", {"daily_summary"},
@@ -62,20 +62,27 @@ SCENES = [
 async def setup() -> None:
     """Off camera before scene 5: Leo and Max take both 10:30 AM haircuts."""
     async with Client(mcp) as c:
-        for name in ("Leo", "Max"):
-            await c.call_tool("book_appointment", {"customer_name": name, "service": "haircut", "date": "today", "time": "10:30 AM"})
+        for name, phone in (("Leo", "+13105550177"), ("Max", "+13105550178")):
+            await c.call_tool("book_appointment", {"customer_name": name, "customer_phone": phone, "service": "haircut",
+                                                   "date": "today", "time": "10:30 AM"})
 
 
 async def main(mode: str) -> int:
     respond = rehearsal.respond if mode == "rehearsal" else agent.respond
     problems = 0
-    for scene, lines in SCENES:
+    info = tenancy.demo_business().info()
+    for scene, caller, lines in SCENES:
         if scene.startswith("5."):
             await setup()
         print(f"\n=== {scene}")
         session = None
+        known = None
+        if caller:
+            with _conn() as conn:
+                known = schedule.customer_by_phone(conn, caller)
+        context = {**info, "caller_phone": caller, "caller_name": known["name"] if known else None, "who": "either"}
         for text, tools, expected in lines:
-            r = await respond(text, session, server=mcp, business="Main Street Barbers")
+            r = await respond(text, session, server=mcp, business=info["name"], context=context)
             session = r["session"]
             called = [c["tool"] for c in r["calls"]]
             missing = tools - set(called)

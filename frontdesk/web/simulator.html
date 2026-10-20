@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:,">
-<title>Front Desk · Voice simulator</title>
+<title>Front Desk · Phone line</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet">
@@ -112,6 +112,14 @@
   .hint { font-size: 13px; color: var(--ink-soft); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
   kbd { font: inherit; font-size: 12px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: #fff; }
 
+  /* caller ID */
+  .caller { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; font-size: 14px; color: var(--ink-soft); }
+  .caller select, .caller input {
+    font: inherit; font-size: 14px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--line); background: #fff; color: var(--ink);
+  }
+  .caller input { width: 170px; }
+  .caller a { margin-left: auto; color: var(--ink-soft); }
+
   /* behind the scenes */
   .behind h2 { font-size: 15px; font-weight: 700; margin: 0 0 8px; font-variation-settings: "wdth" 110; }
   .behind p.empty { margin: 0; color: var(--ink-soft); font-size: 14px; }
@@ -156,10 +164,16 @@
     <button type="button" class="mic" id="mic" aria-pressed="false" aria-label="Talk">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
     </button>
-    <input type="text" id="text" placeholder="Or type: I need a haircut Friday morning" aria-label="What the customer says">
+    <input type="text" id="text" placeholder="Or type: anything open Friday morning?" aria-label="What the customer says">
     <button type="submit" class="send">Send</button>
   </form>
   <div class="hint"><span id="hint">Tap the mic and speak, then pause to send. Or hold <kbd>Space</kbd> to talk.</span><button type="button" class="new" id="new">New conversation</button></div>
+  <div class="caller">
+    <label for="caller">Calling from</label>
+    <select id="caller"><option value="">Hidden number</option></select>
+    <input id="caller-other" type="tel" placeholder="(310) 555-0199" aria-label="Caller's phone number" hidden>
+    <a id="owner-link" href="/app">Owner? Open the app</a>
+  </div>
 
   <section class="behind" aria-labelledby="behind-title">
     <h2 id="behind-title">Behind the voice: calls to the MCP server</h2>
@@ -174,14 +188,32 @@
   const screen = $("screen"), customer = $("customer"), reply = $("reply");
   const list = $("calls"), empty = $("empty"), input = $("text"), mic = $("mic"), hint = $("hint");
   const LANG = "en-US";
+  // which business this phone line belongs to: /b/<slug>, or the demo barbershop at /simulator
+  const m = location.pathname.match(/^\/b\/([a-z0-9-]+)/);
+  const SLUG = m ? m[1] : "main-street-barbers";
+  const API = `/api/b/${SLUG}`;
   const DEFAULT_HINT = hint.innerHTML;
   const GREETING = "Hi! Tap the mic and ask for an appointment.";
   let session = null;
   let busy = false;
 
-  // server clock (follows FRONTDESK_NOW, used when recording the demo)
-  const clock = () => fetch("/api/week?days=1", { cache: "no-store" }).then(r => r.json()).then(d => {
-    if (d.business) $("brand").textContent = d.business;
+  // caller ID: what a phone line would know about the caller (sample customers on the demo)
+  const callerSel = $("caller"), callerOther = $("caller-other");
+  let callersLoaded = false;
+  const callerPhone = () => callerSel.value === "other" ? callerOther.value.trim() : callerSel.value;
+  const resetConversation = () => $("new").click();
+  callerSel.addEventListener("change", () => { callerOther.hidden = callerSel.value !== "other"; if (!callerOther.hidden) callerOther.focus(); resetConversation(); });
+  callerOther.addEventListener("change", resetConversation);
+
+  // business name and server clock (follows FRONTDESK_NOW, used when recording the demo)
+  const clock = () => fetch(`${API}/public`, { cache: "no-store" }).then(r => r.json()).then(d => {
+    if (d.name) { $("brand").textContent = d.name; document.title = `${d.name} · Front Desk phone line`; }
+    if (!callersLoaded) {
+      callersLoaded = true;
+      (d.demo_callers || []).forEach(c => callerSel.add(new Option(`${c.name} · ${c.display}`, c.phone)));
+      callerSel.add(new Option("Another number…", "other"));
+      $("owner-link").href = d.is_owner ? `/app#${SLUG}/today` : "/login";
+    }
     if (d.now) {
       const [h, m] = d.now.slice(11, 16).split(":").map(Number);
       $("clock").textContent = `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
@@ -245,9 +277,9 @@
     setState("thinking");
     let answer = "";
     try {
-      const r = await fetch("/api/conversation", {
+      const r = await fetch(`${API}/conversation`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: sentence, session })
+        body: JSON.stringify({ text: sentence, session, caller_phone: callerPhone() })
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `Error ${r.status}`);
@@ -280,7 +312,7 @@
 
   $("new").addEventListener("click", () => {
     stopListening(false);
-    if (session) fetch(`/api/conversation/${session}`, { method: "DELETE" }).catch(() => {});
+    if (session) fetch(`${API}/conversation/${session}`, { method: "DELETE" }).catch(() => {});
     session = null;
     list.innerHTML = ""; empty.hidden = false;
     customer.textContent = "";

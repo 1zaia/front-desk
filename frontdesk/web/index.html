@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Front Desk · A voice receptionist for appointment businesses</title>
+<meta name="description" content="Front Desk answers the phone for barbershops, salons, clinics and studios: it books, moves and cancels appointments by voice, fills cancellations from a waitlist, and gives the owner a full schedule to run by hand.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f3f5f2; --ink: #1b2422; --ink-soft: #5d6a67; --line: #d6dcd8;
+    --desk: #0d2a31; --desk-2: #12363f; --desk-text: #eef6f5; --desk-soft: #8fb3b5;
+    --assistant: #35c6d8; --assistant-bg: #e3f6f8; --waitlist: #c98a1b; --manual: #46524f;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { font-family: "Archivo", system-ui, sans-serif; color: var(--ink); background: var(--paper); font-size: 17px; line-height: 1.55; }
+  a { color: inherit; }
+  :focus-visible { outline: 3px solid var(--assistant); outline-offset: 3px; }
+  .wrap { max-width: 1160px; margin: 0 auto; padding: 0 clamp(18px, 4vw, 40px); }
+  .btn { display: inline-block; text-decoration: none; font-weight: 650; border-radius: 10px; padding: 13px 20px; border: 1px solid transparent; }
+  .btn.primary { background: var(--assistant); color: var(--desk); }
+  .btn.ghost { border-color: rgba(255,255,255,.28); color: var(--desk-text); }
+  .btn.dark { background: var(--desk); color: #fff; }
+
+  /* hero */
+  .hero { background: radial-gradient(120% 90% at 10% 0%, var(--desk-2), var(--desk) 62%); color: var(--desk-text); overflow: hidden; }
+  .top { display: flex; justify-content: space-between; align-items: center; padding: 22px 0; }
+  .brand { font-variation-settings: "wdth" 125; font-weight: 750; font-size: 19px; text-decoration: none; white-space: nowrap; }
+  .top nav { display: flex; gap: 18px; align-items: center; font-size: 15px; }
+  .top nav a { text-decoration: none; color: #cfe3e2; }
+  .hero-grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: clamp(28px, 5vw, 72px); align-items: center; padding: 40px 0 84px; }
+  h1 {
+    font-size: clamp(42px, 6.4vw, 84px); line-height: .96; margin: 0; font-weight: 750;
+    font-variation-settings: "wdth" 118; letter-spacing: -.01em; max-width: 11ch;
+  }
+  .lede { font-size: clamp(17px, 1.6vw, 20px); color: #b9d2d2; max-width: 44ch; margin: 22px 0 30px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; }
+
+  /* the live call */
+  .call { display: grid; gap: 14px; }
+  .device { background: #071b20; border-radius: 22px; padding: 14px; box-shadow: 0 40px 70px -40px rgba(0,0,0,.8); }
+  .screen { background: radial-gradient(120% 90% at 0% 0%, #12363f, #0d2a31 60%); border-radius: 12px; padding: 22px 24px; min-height: 236px; display: grid; grid-template-rows: auto 1fr auto; }
+  .screen .meta { display: flex; justify-content: space-between; color: var(--desk-soft); font-size: 13px; }
+  .lines { align-self: center; display: grid; gap: 10px; min-height: 140px; align-content: center; }
+  .line { opacity: 0; transform: translateY(6px); transition: opacity .35s ease, transform .35s ease; font-size: 16px; line-height: 1.35; }
+  .line.on { opacity: 1; transform: none; }
+  .line.caller { color: var(--desk-soft); }
+  .line.desk { color: #fff; font-size: 19px; font-weight: 500; font-variation-settings: "wdth" 94; }
+  .bar { height: 5px; border-radius: 3px; background: rgba(255,255,255,.08); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 30%; background: var(--assistant); border-radius: 3px; animation: sweep 1.4s linear infinite; }
+  @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+  .tools { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12.5px; }
+  .tools span { border: 1px solid rgba(53,198,216,.4); color: #a9e7ee; border-radius: 999px; padding: 3px 10px; opacity: 0; transition: opacity .3s; }
+  .tools span.on { opacity: 1; }
+  .slotcard {
+    background: #fff; color: var(--ink); border-radius: 12px; padding: 12px 14px; display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center;
+    border-left: 5px solid var(--assistant); opacity: 0; transform: translateY(10px); transition: opacity .4s, transform .4s;
+  }
+  .slotcard.on { opacity: 1; transform: none; }
+  .slotcard time { font-weight: 700; font-variation-settings: "wdth" 80; font-size: 22px; font-variant-numeric: tabular-nums; }
+  .slotcard small { display: block; color: var(--ink-soft); }
+  .slotcard em { font-style: normal; font-size: 12px; font-weight: 600; background: var(--assistant-bg); color: #0d6f7c; padding: 3px 8px; border-radius: 999px; }
+
+  /* sections */
+  section.band { padding: clamp(56px, 8vw, 96px) 0; }
+  h2 { font-size: clamp(30px, 3.6vw, 46px); line-height: 1.05; font-variation-settings: "wdth" 112; margin: 0 0 14px; max-width: 18ch; }
+  .intro { color: var(--ink-soft); max-width: 58ch; margin: 0 0 36px; }
+  .flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border-top: 2px solid var(--ink); }
+  .flow div { padding: 20px 22px 0 0; }
+  .flow b { display: block; font-size: 20px; font-variation-settings: "wdth" 105; margin-bottom: 6px; }
+  .flow p { margin: 0; color: var(--ink-soft); }
+  .types { display: flex; flex-wrap: wrap; gap: 8px 10px; margin: 0; padding: 0; list-style: none; }
+  .types li { font-size: clamp(20px, 2.4vw, 30px); font-variation-settings: "wdth" 70; font-weight: 650; line-height: 1.1; }
+  .types li:not(:last-child)::after { content: " /"; color: var(--assistant); }
+  .types-note { color: var(--ink-soft); margin-top: 18px; max-width: 60ch; }
+  .manual { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(24px, 5vw, 64px); align-items: start; }
+  .manual ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 0; }
+  .manual li { padding: 14px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 170px 1fr; gap: 12px; }
+  .manual li b { font-weight: 650; }
+  .manual li span { color: var(--ink-soft); }
+  .legend { display: grid; gap: 10px; margin-top: 22px; }
+  .legend div { display: grid; grid-template-columns: 6px 1fr; gap: 12px; align-items: stretch; }
+  .legend i { border-radius: 3px; }
+  .dev { background: var(--desk); color: var(--desk-text); }
+  .dev .intro { color: #b9d2d2; }
+  .dev code { display: block; background: #071b20; color: #d9f3f4; padding: 16px 18px; border-radius: 12px; font-size: 15px; overflow-wrap: anywhere; }
+  .dev .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px; }
+  .dev ul { margin: 0; padding-left: 18px; color: #cfe3e2; }
+  .end { text-align: left; }
+  footer { padding: 28px 0 40px; color: var(--ink-soft); font-size: 14px; }
+
+  @media (max-width: 860px) {
+    .hero-grid, .manual, .dev .cols { grid-template-columns: 1fr; }
+    .flow { grid-template-columns: 1fr; }
+    .manual li { grid-template-columns: 1fr; gap: 2px; }
+    .top nav a.hide-sm { display: none; }
+    .top nav { gap: 12px; }
+    .top nav .btn { padding: 9px 12px; font-size: 14px; }
+    .screen .meta span + span { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .line, .slotcard, .tools span { opacity: 1 !important; transform: none !important; transition: none !important; }
+    .bar i { animation: none; }
+  }
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="wrap">
+    <div class="top">
+      <a class="brand" href="/">Front Desk</a>
+      <nav><a class="hide-sm" href="/demo">Live demo</a><a href="/login">Sign in</a><a class="btn primary" href="/signup">Create your business</a></nav>
+    </div>
+    <div class="hero-grid">
+      <div>
+        <h1>Every call answered. Every chair filled.</h1>
+        <p class="lede">Front Desk is a voice receptionist for businesses that run on appointments. It books, moves and cancels by phone, gives cancelled slots to the waitlist, and keeps a schedule you can still run by hand.</p>
+        <div class="cta"><a class="btn primary" href="/signup">Create your business</a><a class="btn ghost" href="/demo">Try the demo call</a></div>
+      </div>
+      <div class="call" aria-label="Example call">
+        <div class="device"><div class="screen">
+          <div class="meta"><span>Main Street Barbers</span><span>Incoming call · (310) 555-0199</span></div>
+          <div class="lines" id="lines"></div>
+          <div class="bar"><i></i></div>
+        </div></div>
+        <div class="tools" id="tools"><span>check_availability</span><span>book_appointment</span></div>
+        <div class="slotcard" id="slot"><time>9:30</time><div><b>Jordan</b><small>Haircut with Marcus · (310) 555-0199</small></div><em>Voice assistant</em></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="band">
+    <div class="wrap">
+      <h2>One call, start to finish</h2>
+      <p class="intro">The receptionist works through your real schedule with the same tools you use, so it never offers a time that isn't free.</p>
+      <div class="flow">
+        <div><b>It listens</b><p>“Anything for a haircut this morning?” Caller ID tells it who's calling; regulars get “Welcome back, want the usual?”</p></div>
+        <div><b>It books</b><p>It checks open times, asks for a name and phone number in one go, and books the slot with the right person.</p></div>
+        <div><b>You see it</b><p>The appointment lands on your calendar and the live board at the front desk, marked as booked by the assistant.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" style="background:#e8ece9">
+    <div class="wrap">
+      <h2>Made for any business with a calendar</h2>
+      <ul class="types">
+        <li>Barbershops</li><li>Hair salons</li><li>Nail studios</li><li>Spas</li><li>Physical therapy</li><li>Clinics</li>
+        <li>Pet grooming</li><li>Tattoo studios</li><li>Personal trainers</li><li>Tutors</li>
+      </ul>
+      <p class="types-note">Pick your kind of business and Front Desk starts with fitting services, hours and words: stylists for a salon, groomers for a pet shop, patients for a clinic. Change any of it in a minute.</p>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap manual">
+      <div>
+        <h2>The phone runs itself. The schedule is still yours.</h2>
+        <p class="intro">Everything the receptionist does, you can do by hand, from one app.</p>
+        <div class="legend">
+          <div><i style="background:var(--assistant)"></i><span><b>Cyan</b> appointments were booked by the voice assistant.</span></div>
+          <div><i style="background:var(--waitlist)"></i><span><b>Amber</b> ones came from the waitlist after a cancellation.</span></div>
+          <div><i style="background:var(--manual)"></i><span><b>Graphite</b> ones you added yourself.</span></div>
+        </div>
+      </div>
+      <ul>
+        <li><b>Calendar</b><span>Day view by team member. Click an empty spot to book; click an appointment to move, complete or cancel it.</span></li>
+        <li><b>Customers</b><span>Every caller saved with name and phone, visit history, no-shows and notes.</span></li>
+        <li><b>Waitlist</b><span>Fills cancelled slots automatically, first come, first served.</span></li>
+        <li><b>Services and team</b><span>Prices, durations, who takes bookings, time off.</span></li>
+        <li><b>Opening hours</b><span>The receptionist only offers times when you're open.</span></li>
+        <li><b>More than one location</b><span>Run several businesses from one account, each with its own data.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="band dev">
+    <div class="wrap">
+      <h2>Built on MCP, ready for Alexa+</h2>
+      <p class="intro">Each business gets its own MCP server address. Alexa+ or any MCP client can book through it; owner tools are protected by an API key.</p>
+      <div class="cols">
+        <code>POST https://your-front-desk/b/main-street-barbers/mcp</code>
+        <ul>
+          <li>Streamable HTTP, protocol 2025-11-25, annotated tools with structured output</li>
+          <li>Agent on Amazon Bedrock with Amazon Nova, calling the same tools</li>
+          <li>Every booking requires a name and a phone number</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="band end">
+    <div class="wrap">
+      <h2>Set up your front desk in two minutes</h2>
+      <p class="intro">Create an account, pick your kind of business, and your receptionist is ready to take its first call.</p>
+      <div class="cta"><a class="btn dark" href="/signup">Create your business</a><a class="btn" href="/login" style="border-color:var(--line)">Sign in</a></div>
+    </div>
+  </section>
+</main>
+<footer><div class="wrap">Front Desk · Open source under the MIT license · <a href="https://github.com/1zaia/front-desk">GitHub</a></div></footer>
+
+<script>
+(() => {
+  const script = [
+    ["caller", "Hi! Anything for a haircut this morning?"],
+    ["desk", "For a haircut this morning, I have 9 AM, 9:30 AM, or 10 AM. Which works best?", 0],
+    ["caller", "9:30 works. I'm Jordan."],
+    ["desk", "You're all set, Jordan! A haircut today at 9:30 AM with Marcus.", 1],
+  ];
+  const lines = document.getElementById("lines"), tools = [...document.querySelectorAll("#tools span")], slot = document.getElementById("slot");
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const show = (i) => {
+    const [who, text, tool] = script[i];
+    const el = document.createElement("div"); el.className = `line ${who}`; el.textContent = (who === "caller" ? "“" + text + "”" : text);
+    if (who === "caller") lines.innerHTML = "";
+    lines.append(el); requestAnimationFrame(() => el.classList.add("on"));
+    if (tool !== undefined) tools[tool].classList.add("on");
+    if (i === script.length - 1) setTimeout(() => slot.classList.add("on"), 500);
+  };
+  if (reduce) { lines.innerHTML = ""; [2, 3].forEach(show); tools.forEach(t => t.classList.add("on")); slot.classList.add("on"); return; }
+  let i = 0;
+  const loop = () => {
+    show(i); i++;
+    if (i < script.length) setTimeout(loop, i % 2 ? 1900 : 1500);
+    else setTimeout(() => { i = 0; lines.innerHTML = ""; tools.forEach(t => t.classList.remove("on")); slot.classList.remove("on"); setTimeout(loop, 700); }, 5200);
+  };
+  setTimeout(loop, 500);
+})();
+</script>
+</body>
+</html>

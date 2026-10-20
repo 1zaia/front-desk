@@ -18,7 +18,13 @@
 </style>
 </head>
 <body>
-  <iframe src="/simulator" title="Voice simulator" allow="microphone; autoplay"></iframe>
-  <iframe src="/dashboard" title="Owner dashboard"></iframe>
+  <iframe id="phone" title="Phone line" allow="microphone; autoplay"></iframe>
+  <iframe id="board" title="Live board"></iframe>
+<script>
+  // /b/<slug>/demo for any business, /demo for the demo barbershop
+  const slug = (location.pathname.match(/^\/b\/([a-z0-9-]+)/) || [])[1];
+  document.getElementById("phone").src = slug ? `/b/${slug}` : "/simulator";
+  document.getElementById("board").src = (slug ? `/b/${slug}/board` : "/dashboard") + location.search;
+</script>
 </body>
 </html>
