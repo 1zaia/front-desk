@@ -136,6 +136,23 @@ def test_want_the_usual_is_asked_before_anything_else(monkeypatch):
     assert len(model.calls) == 1  # the model didn't get to offer times
 
 
+def test_taken_time_is_said_as_is():
+    model = FakeModel([
+        [("book_appointment", {"customer_name": "Ana", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        [("book_appointment", {"customer_name": "Bea", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        [("book_appointment", {"customer_name": "Nick", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        "For a haircut Friday I have 9 AM or 11 AM.",  # never reached: the tool's answer is spoken
+    ])
+
+    async def run():
+        for text in ("Ana, haircut Friday 10", "Bea, haircut Friday 10"):
+            await agent.respond(text, server=_server(), converse=model)
+        return await agent.respond("Can I get a haircut Friday at 10? I'm Nick.", server=_server(), converse=model)
+
+    r = anyio.run(run)
+    assert r["reply"] == "Sorry, 10 AM is already taken. I can check other times, or put you on the waitlist."
+
+
 def test_waitlist_needs_the_customers_ok():
     model = FakeModel([
         [("join_waitlist", {"customer_name": "Nick", "service": "haircut", "date": "Friday", "time": "10 AM"})],

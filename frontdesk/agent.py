@@ -53,7 +53,8 @@ Rules:
 - When the customer introduces themselves (e.g. "Hey, it's Sam"), call customer_history and answer with its "speech" as it is. Don't check availability or offer times until they say what they want.
 - If they want "the usual" (or say yes after "Want the usual?"), call book_appointment with service exactly "the usual" and no barber: the tool picks their usual service and barber. Never replace "the usual" with a service or barber name yourself.
 - Pass the customer's name exactly as they said it, with spaces.
-- If the time they want is taken or nothing is open, offer the waitlist and use join_waitlist if they accept.
+- If the customer asks for one specific time and you already know their name, the service and the day, call book_appointment right away: it books it, or says the time is taken and offers the waitlist.
+- If the time they want is taken or nothing is open, offer the waitlist and use join_waitlist only if they accept, passing the time they asked for.
 - If the person is the owner asking about the schedule, use daily_summary. If the owner wants to take time off a barber's schedule, use block_time."""
 
 
@@ -86,7 +87,9 @@ def _agreed_to_waitlist(messages: list[dict]) -> bool:
 
 def _ask_and_wait(tool: str, speech: str) -> bool:
     """Tool answers that end in a question for the customer: speak them as they are and wait for the reply."""
-    return tool == "customer_history" and speech.endswith("Want the usual?")
+    if tool == "customer_history":
+        return speech.endswith("Want the usual?")
+    return tool == "book_appointment" and "already taken" in speech and "waitlist" in speech
 
 
 @dataclass
