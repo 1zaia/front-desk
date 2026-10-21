@@ -1,7 +1,8 @@
 """Rehearsal mode: a simple rule-based agent, without Bedrock, to run the demo when the model is unavailable.
 
-It understands booking sentences in English with rules (service, day, period, time, name) and calls
-the same MCP server tools, over the same path as the real agent (tools/list and tools/call).
+It understands booking sentences in English with rules (service, day, period, time, name, phone) and calls
+the same MCP server tools, over the same path as the real agent (tools/list and tools/call). Service and staff
+names come from the business itself (list_services), so it works for any type of business.
 Enabled with FRONTDESK_AGENT=rehearsal. The screen shows "rehearsal mode".
 """
 from __future__ import annotations
@@ -23,7 +24,6 @@ NUMBER_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
     "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
 }
-BARBERS = ("marcus", "diego")
 NOT_NAMES = {
     "a", "an", "the", "here", "just", "looking", "calling", "trying", "wondering", "interested", "free",
     "available", "good", "fine", "sorry", "ready", "gonna", "going", "booking", "hoping", "new", "back",
@@ -31,7 +31,7 @@ NOT_NAMES = {
     "evening", "tonight", "noon", "yes", "yeah", "yep", "no", "nope", "sure", "ok", "okay", "please", "thanks",
     "thank", "you", "um", "uh", "so", "and", "it", "is", "its", "name", "my", "me", "for", "at", "on", "in",
     "to", "with", "am", "pm", "i", "im", "that", "this", "works", "great", "perfect", "sounds", "cool",
-    *WEEKDAYS, *BARBERS,
+    "number", "phone", "cell", "mobile", "zero", "oh", *NUMBER_WORDS, *WEEKDAYS,
 }
 GREETINGS = {"hi", "hello", "hey", "there", "good", "morning", "afternoon", "evening", "how", "are", "you",
              "doing", "yo", "howdy", "whats", "up"}
@@ -52,7 +52,20 @@ def _norm(text: str) -> str:
     return " ".join(t.split())
 
 
-def _service(t: str) -> str | None:
+def _service(t: str, names: list[str] | None = None) -> str | None:
+    """The service the customer mentions: one of the business's own services when it matches, else barbershop words."""
+    if names:
+        best, score = None, 0
+        for name in names:
+            words = [w for w in _norm(name).split() if w not in ("and", "the", "a", "of", "s")]
+            hits = sum(1 for w in words if re.search(rf"\b{re.escape(w)}s?\b", t))
+            if hits and (hits > score or (hits == score and best and len(name) > len(best) and hits == len(words))):
+                best, score = name, hits
+        if best:
+            whole = [n for n in names if all(re.search(rf"\b{re.escape(w)}s?\b", t) for w in _norm(n).split() if w not in ("and", "the", "a", "of", "s"))]
+            return max(whole, key=len) if whole else best
+        if not any(n.lower() in ("haircut", "beard trim") for n in names):
+            return None
     haircut = re.search(r"\b(haircut|hair cut|cut|cuts|trim my hair|fade|buzz)\b", t) or re.search(r"\bhair\b", t)
     if "beard" in t and haircut:
         return "haircut and beard"
@@ -143,10 +156,29 @@ def _name(original: str, t: str, waiting_for_name: bool) -> str | None:
     return " ".join(originals.get(p, p).capitalize() for p in parts)
 
 
-def _barber(t: str) -> str | None:
-    for name in BARBERS:
-        if re.search(rf"\b{name}s?\b", t):  # "diegos" from "Diego's"
-            return name.capitalize()
+def _staff(t: str, team: list[str]) -> str | None:
+    for name in team:
+        for part in _norm(name).replace(".", " ").split():
+            if part in ("dr", "ms", "mr", "mrs") or len(part) < 2:
+                continue
+            if re.search(rf"\b{re.escape(part)}s?\b", t):  # "diegos" from "Diego's"
+                return name
+    return None
+
+
+PHONE_WORDS = {"zero": "0", "oh": "0", **{w: str(n) for w, n in NUMBER_WORDS.items() if n <= 9}}
+
+
+def _phone(t: str) -> str | None:
+    """A phone number said or typed: '310 555 0142', '(310) 555-0142', 'three one zero five five five...'."""
+    spoken = " ".join(PHONE_WORDS.get(w, w) for w in t.split())
+    m = re.search(r"(?:\+?1[ -]?)?\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}\b", spoken)
+    if m:
+        return m.group(0)
+    digits = re.findall(r"\b\d\b", spoken)
+    run = re.search(r"(?:\b\d\b ?){10,11}", spoken)
+    if run and len(digits) >= 10:
+        return run.group(0).replace(" ", "")
     return None
 
 
@@ -170,7 +202,7 @@ def _span(t: str) -> tuple[str | None, str | None]:
 def _intent(t: str, st: dict) -> str:
     if re.search(r"\bcancel|\bcall off\b", t):
         return "cancel"
-    if _barber(t) and re.search(r"\bblock|\b(is|will be|s) (off|out)\b|\bday off\b|\btake .* off\b|\bnot (coming|working)\b", t):
+    if _staff(t, st.get("team", [])) and re.search(r"\bblock|\b(is|will be|s) (off|out)\b|\bday off\b|\btake .* off\b|\bnot (coming|working)\b", t):
         return "block"
     if re.search(r"\b(waitlist|wait list|waiting list|put me on|let me know if (something|anything) opens)\b", t):
         return "waitlist"
@@ -182,12 +214,13 @@ def _intent(t: str, st: dict) -> str:
         return "summary"
     if re.search(r"\b(how much|price|prices|cost|costs|what services|what do you (offer|do|have)|menu)\b", t):
         return "services"
-    if re.search(r"\b(are you open|you open|open on|what time do you (open|close)|hours|when do you (open|close)|do you open)\b", t) and not _service(t):
+    if re.search(r"\b(are you open|you open|open on|what time do you (open|close)|hours|when do you (open|close)|do you open)\b", t) and not _service(t, st.get("services")):
         return "hours"
     return "book"
 
 
-async def respond(text: str, session_id: str | None = None, server: Any = None, business: str = "") -> dict:
+async def respond(text: str, session_id: str | None = None, server: Any = None, business: str = "",
+                  context: dict | None = None) -> dict:
     text = (text or "").strip()
     if not text:
         raise ValueError("Empty utterance.")
@@ -199,30 +232,43 @@ async def respond(text: str, session_id: str | None = None, server: Any = None, 
     calls: list[dict] = []
     t_start = time.perf_counter()
 
-    waiting_for_name = st.get("pending") == "name"
+    context = context or {}
+    if context.get("caller_phone") and not st.get("phone"):
+        st["phone"] = context["caller_phone"]
+        if context.get("caller_name"):
+            st["name"] = context["caller_name"]
+    waiting_for_name = st.get("pending") in ("name", "name_phone")
+    phone_said = _phone(t)
     found = {
-        "service": _service(t), "date": _date(t), "period": _period(t), "time": _time(t),
-        "name": _name(text, t, waiting_for_name), "barber": _barber(t),
+        "date": _date(t), "period": _period(t), "time": _time(t) if not phone_said else None,
+        "name": _name(text, re.sub(r"[\d()+.-]+", " ", t), waiting_for_name), "phone": phone_said,
     }
-    intent = _intent(t, st)
-    if intent == "book" and st.get("intent") in ("cancel", "reschedule", "waitlist") and not found["service"]:
-        intent = st["intent"]
-    if _usual(t) or (st.get("offer") == "usual" and re.search(YES, t)):
-        found["service"] = "the usual"
-    if intent == "block":
-        found["name"] = None  # the owner is talking about a barber, not giving a customer name
-    for k, v in found.items():
-        if v:
-            st[k] = v
-    st["intent"] = intent
-    st.pop("pending", None)
-    st.pop("offer", None)
-
     try:
         async with Client(target, **options) as mcp:
             t0 = time.perf_counter()
             await mcp.list_tools()
             ms_tools_list = round((time.perf_counter() - t0) * 1000)
+            if "services" not in st:  # the business's own services and team, to understand what is said
+                catalog = agent.result_data(await mcp.call_tool("list_services", {}))
+                st["services"] = [x["name"] for x in catalog.get("services", [])]
+                st["team"] = catalog.get("team", [])
+            found["service"] = _service(t, st["services"])
+            found["staff"] = _staff(t, st["team"])
+            if found["name"] and found["staff"] and _norm(found["name"]).split()[0] in _norm(found["staff"]).split():
+                found["name"] = None
+            intent = _intent(t, st)
+            if intent == "book" and st.get("intent") in ("cancel", "reschedule", "waitlist") and not found["service"]:
+                intent = st["intent"]
+            if _usual(t) or (st.get("offer") == "usual" and re.search(YES, t)):
+                found["service"] = "the usual"
+            if intent == "block":
+                found["name"] = None  # the owner is talking about a staff member, not giving a customer name
+            for k, v in found.items():
+                if v:
+                    st[k] = v
+            st["intent"] = intent
+            st.pop("pending", None)
+            st.pop("offer", None)
 
             async def use(name: str, args: dict) -> dict:
                 args = {k: v for k, v in args.items() if v}
@@ -268,7 +314,7 @@ def _service_for_lookup(st: dict) -> str | None:
 async def _decide_inner(st: dict, intent: str, t: str, use) -> str:
     if intent == "block":
         start, end = _span(t)
-        r = await use("block_time", {"barber": st.get("barber"), "date": _date(t) or st.get("date") or "today",
+        r = await use("block_time", {"staff": st.get("staff"), "date": _date(t) or st.get("date") or "today",
                                      "start_time": start, "end_time": end,
                                      "period": None if start else _period(t)})
         st.clear()
@@ -280,13 +326,13 @@ async def _decide_inner(st: dict, intent: str, t: str, use) -> str:
             return "Sure. Which service would you like?"
         if not st.get("date"):
             return "Sure. For which day?"
-        if not st.get("name"):
-            st["pending"] = "name"
-            return "Sure. Can I get your name for the waitlist?"
-        r = await use("join_waitlist", {"customer_name": st["name"], "service": service, "date": st["date"],
-                                        "time": st.get("wanted_time") or st.get("time"),
+        missing = _missing_contact(st)
+        if missing:
+            return missing
+        r = await use("join_waitlist", {"customer_name": st["name"], "customer_phone": st["phone"], "service": service,
+                                        "date": st["date"], "time": st.get("wanted_time") or st.get("time"),
                                         "period": None if (st.get("wanted_time") or st.get("time")) else st.get("period"),
-                                        "barber": st.get("barber")})
+                                        "staff": st.get("staff")})
         if r.get("ok"):
             _reset(st)
         return r["speech"]
@@ -298,22 +344,23 @@ async def _decide_inner(st: dict, intent: str, t: str, use) -> str:
         return (await use("daily_summary", {"date": st.get("date")}))["speech"]
 
     if intent == "cancel":
-        if not st.get("name"):
+        if not st.get("name") and not st.get("phone"):
             st["pending"] = "name"
             return "Sure. What name is the appointment under?"
-        r = await use("cancel_appointment", {"customer_name": st["name"], "date": st.get("date") if _date(t) else None})
+        r = await use("cancel_appointment", {"customer_phone": st.get("phone"), "customer_name": st.get("name"),
+                                             "date": st.get("date") if _date(t) else None})
         if r.get("ok"):
             _reset(st)
         return r["speech"]
 
     if intent == "reschedule":
-        if not st.get("name"):
+        if not st.get("name") and not st.get("phone"):
             st["pending"] = "name"
             return "Sure. What name is the appointment under?"
         if not st.get("time"):
             return "What day and time would you like instead?"
-        r = await use("reschedule_appointment", {"customer_name": st["name"], "new_date": st.get("date"),
-                                                 "new_time": st["time"]})
+        r = await use("reschedule_appointment", {"customer_phone": st.get("phone"), "customer_name": st.get("name"),
+                                                 "new_date": st.get("date"), "new_time": st["time"]})
         if r.get("ok"):
             _reset(st)
         else:
@@ -322,24 +369,29 @@ async def _decide_inner(st: dict, intent: str, t: str, use) -> str:
 
     if intent == "hours":
         day = _date(t) or "today"
-        r = await use("check_availability", {"date": day, "service": "haircut"})
+        r = await use("check_availability", {"date": day, "service": st["services"][0] if st.get("services") else "haircut"})
         if r.get("ok") and r.get("slots"):
             st["date"] = day
             return f"Yes, we're open. {r['speech']}"
         return r["speech"]
 
     # book
-    if t and set(t.split()) <= GREETINGS:
+    greeting = bool(t) and set(t.split()) <= GREETINGS
+    if greeting and not (st.get("phone") and not st.get("looked_up")):
         return "Hi there! Want to book an appointment? Just tell me the service and the day."
-    if st.get("name") and not st.get("looked_up") and st.get("service") in (None, "the usual"):
-        # a customer who says their name first: greet them like a regular
+    if (st.get("name") or st.get("phone")) and not st.get("looked_up") and st.get("service") in (None, "the usual"):
+        # a customer who says their name first (or calls from a known number): greet them like a regular
         st["looked_up"] = True
-        r = await use("customer_history", {"customer_name": st["name"]})
+        r = await use("customer_history", {"customer_phone": st.get("phone"), "customer_name": st.get("name")})
         profile = r.get("profile") or {}
-        if profile.get("customer"):
+        if profile.get("visits") or profile.get("upcoming"):
             st["name"] = profile["customer"]
             st["usual_service"] = profile.get("usual_service")
+            if profile.get("phone") and not st.get("phone"):
+                st["phone"] = profile["phone"]
         if not st.get("service") or not st.get("date"):
+            if not st.get("name") and not (profile.get("visits") or profile.get("upcoming")):
+                return "Hi there! Want to book an appointment? Just tell me the service and the day."
             return r["speech"]
     if not st.get("service"):
         parts = []
@@ -347,21 +399,22 @@ async def _decide_inner(st: dict, intent: str, t: str, use) -> str:
             parts.append(st["date"])
         if st.get("time"):
             parts.append(f"at {st['time']}")
-        question = "which service would you like: a haircut, a beard trim, haircut and beard, or a hot towel shave?"
+        options = [x.lower() for x in st.get("services", [])][:4]
+        question = f"which service would you like: {_join_or(options)}?" if options else "which service would you like?"
         if parts:
             return f"Sure! For {' '.join(parts)}, {question}"
         return f"Sure! {question[0].upper()}{question[1:]}"
     if not st.get("date"):
         return f"What day would you like the {'usual' if st['service'] == 'the usual' else st['service']}?"
     if not st.get("time"):
-        r = await use("check_availability", {"date": st["date"], "service": _service_for_lookup(st) or "haircut",
-                                             "period": st.get("period"), "barber": st.get("barber")})
+        r = await use("check_availability", {"date": st["date"], "service": _service_for_lookup(st) or st["services"][0],
+                                             "period": st.get("period"), "staff": st.get("staff")})
         return r["speech"]
-    if not st.get("name"):
-        st["pending"] = "name"
-        return "Perfect. Can I get your name?"
-    r = await use("book_appointment", {"customer_name": st["name"], "service": st["service"], "date": st["date"],
-                                       "time": st["time"], "barber": st.get("barber")})
+    missing = _missing_contact(st)
+    if missing:
+        return missing
+    r = await use("book_appointment", {"customer_name": st["name"], "customer_phone": st["phone"], "service": st["service"],
+                                       "date": st["date"], "time": st["time"], "staff": st.get("staff")})
     if r.get("ok"):
         _reset(st)
     else:
@@ -369,9 +422,29 @@ async def _decide_inner(st: dict, intent: str, t: str, use) -> str:
     return r["speech"]
 
 
+def _missing_contact(st: dict) -> str | None:
+    """Name and phone are always required: asks for whatever is missing, in one question."""
+    if not st.get("name") and not st.get("phone"):
+        st["pending"] = "name_phone"
+        return "Perfect. Can I get your name and the best phone number?"
+    if not st.get("name"):
+        st["pending"] = "name"
+        return "Perfect. Can I get your name?"
+    if not st.get("phone"):
+        st["pending"] = "phone"
+        return f"Thanks, {st['name'].split()[0]}. And the best phone number for the booking?"
+    return None
+
+
+def _join_or(items: list[str]) -> str:
+    if len(items) <= 2:
+        return " or ".join(items)
+    return ", ".join(items[:-1]) + ", or " + items[-1]
+
+
 def _reset(st: dict) -> None:
-    """Forgets the finished request, but remembers who the customer is."""
-    keep = {k: st[k] for k in ("name", "looked_up", "usual_service") if st.get(k)}
+    """Forgets the finished request, but remembers who the customer is and what the business offers."""
+    keep = {k: st[k] for k in ("name", "phone", "looked_up", "usual_service", "services", "team") if st.get(k)}
     st.clear()
     st.update(keep)
 

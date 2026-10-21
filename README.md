@@ -1,67 +1,64 @@
 # Front Desk
 
-A voice receptionist for small businesses, built as an MCP server for the **Alexa+** track of *Build, Ship, Shape: Amazon Developer Hackathon*.
+A voice receptionist for any business that runs on appointments (barbershops, salons, clinics, studios, groomers, tutors), built as an MCP server for the **Alexa+** track of *Build, Ship, Shape: Amazon Developer Hackathon*.
 
-A customer says "I need a haircut Friday morning", the server checks the schedule, books the slot, and the owner's dashboard updates on the spot.
+A customer calls and says "Anything for a haircut this morning?". Front Desk checks the real schedule, asks for a name and phone number in one go, books the slot, and the appointment shows up on the owner's calendar on the spot. When someone cancels, the slot goes straight to the next person on the waitlist. And the owner can run everything by hand from the Front Desk app.
 
-**Live demo:** https://18-190-98-99.sslip.io/demo (Chrome or Edge) · **MCP endpoint:** `https://18-190-98-99.sslip.io/mcp` (Streamable HTTP)
+**Live:** https://18-190-98-99.sslip.io (Chrome or Edge for voice) · **Demo call:** `/demo` · **MCP endpoint per business:** `https://18-190-98-99.sslip.io/b/<business>/mcp`
+
+## What's in it
+- **Many businesses, one server.** Owners sign up, pick a type of business and get a working setup: services, team, opening hours and the right words ("stylists" and "clients" for a salon, "groomers" for a pet shop, "patients" for a clinic). Each business keeps its schedule in its own database, and one account can run several businesses.
+- **Owner accounts.** Email and password (scrypt), HttpOnly session cookies, rate-limited sign-in. A shared demo account opens the sample barbershop.
+- **Voice receptionist.** An agent on **Amazon Bedrock** (Amazon Nova, Converse API with tool use) calls the business's MCP tools. Every booking needs a **name and a phone number**, asked for together. Caller ID recognizes returning customers ("Welcome back, Sam! Want the usual?"), and "first available" books the earliest open slot.
+- **The owner app** (`/app`), to do by hand everything the receptionist does:
+  - **Today**: the day's agenda, revenue, how many bookings came from the voice assistant, waitlist.
+  - **Calendar**: a day view by team member. Click an empty spot to book, click an appointment to move it, change service or person, mark it completed or no-show, cancel it or add notes. Block time off.
+  - **Customers**: everyone saved by phone number, with visits, no-shows, spend, notes and full history.
+  - **Waitlist**: who's waiting, add people by hand, and the slots it filled.
+  - **Services, team and opening hours**: add, edit and archive. Archived items stay in past appointments.
+  - **Phone line**: the business's public phone page, its MCP address and the owner API key.
+  - **Settings**: name, type of business and time zone.
+- **Live board** (`/b/<business>/board`): the week by team member for a screen at the front desk. New bookings, cancellations and waitlist fills flash as they happen.
 
 ## MCP tools
+Each business has its own endpoint: `POST /b/<business>/mcp` (Streamable HTTP, spec 2025-11-25). `POST /mcp` is the public demo barbershop.
+
 | Tool | What it does | Example request |
 |---|---|---|
-| `list_services` | Services, duration and price | "How much is a haircut?" |
-| `check_availability` | Open slots by day, period and barber | "Anything open Friday morning?" |
-| `book_appointment` | Books the slot, checking opening hours and conflicts | "Book a haircut Friday at 9 for John" |
-| `cancel_appointment` | Cancels the customer's next appointment | "Cancel my appointment" |
-| `reschedule_appointment` | Moves it to another day or time, keeping the same barber when possible | "Can you move it to 4 PM?" |
-| `daily_summary` | Owner's summary: customers, expected revenue, next appointment, waitlist and blocked time | "How's my day looking?" |
-| `join_waitlist` | Puts the customer on the waitlist for a day, a period or an exact time; **when someone cancels, the slot is booked for them automatically** | "Put me on the waitlist for 10:30" |
-| `customer_history` | Recognizes a returning customer: visits, usual service and barber, upcoming appointments | "Hi, it's Sam" → "Welcome back, Sam! Want the usual?" |
-| `block_time` | For the owner: takes time off a barber's schedule and flags appointments already in it | "Block Diego's afternoon, he has the dentist" |
+| `list_services` | Services, duration and price, and who works there | "How much is a haircut?" |
+| `check_availability` | Open slots by day, period and staff member | "Anything open Friday morning?" |
+| `book_appointment` | Books the slot after checking hours and conflicts; needs **name and phone**; takes "first available" and "the usual" | "Book a haircut Friday at 9 for John" |
+| `cancel_appointment` | Cancels the customer's next appointment, found by phone (or name); the slot goes to the waitlist | "Cancel my appointment" |
+| `reschedule_appointment` | Moves it, keeping the same person when possible | "Can you move it to 4 PM?" |
+| `join_waitlist` | Waitlist for a day, a period or an exact time; **booked automatically when a slot opens** | "Put me on the waitlist for 10:30" |
+| `customer_history` | Recognizes a returning customer by phone: visits, usual service and person, upcoming appointments | caller ID → "Welcome back, Sam! Want the usual?" |
+| `daily_summary` | **Owner only:** customers, expected revenue, next appointment, waitlist and blocked time | "How's my day looking?" |
+| `block_time` | **Owner only:** takes time off someone's schedule and flags appointments already in it | "Block Diego's afternoon, he has the dentist" |
 
-`book_appointment` also accepts "the usual" as the service, which books the returning customer's usual service with their usual barber.
-
-Every result has a `speech` field with the short sentence the voice assistant should say, plus structured data (`structuredContent` with an `outputSchema`). Tools are annotated (`readOnlyHint`, `destructiveHint`, `title`) so Alexa+ knows which ones change data.
-The server understands dates like "today", "tomorrow", "Friday", "next Monday", "October 23" and "10/23", and times like "9", "9 AM", "9:30 p.m.", "noon" and "half past 9".
-
-There is also `GET /api/schedule?date=YYYY-MM-DD`, with one day of appointments as JSON, and `GET /api/week`, with the next 7 days for the owner's dashboard.
-
-## Voice simulator and owner dashboard
-The Alexa+ developer tools are in closed preview, so the demo uses a simulated Alexa+ experience in the browser (accepted by the hackathon rules):
-
-- `/simulator`: a voice assistant screen. The customer speaks (Web Speech API, en-US) or types; each utterance goes to `POST /api/conversation`.
-  - **Hands-free:** tap the mic and speak; the turn ends after a short pause, not at the first breath. If the browser stops the recognizer on its own, it restarts and keeps what was already heard.
-  - **Push-to-talk:** hold <kbd>Space</kbd> while talking and release to send.
-  - **Follow-up mode:** when the assistant asks a question, it listens again on its own, like Alexa.
-  - A level meter shows the mic is really hearing you, and the assistant never listens while it is speaking.
-- `POST /api/conversation`: the agent on **Amazon Bedrock** (Amazon Nova, Converse API with tool use) reads the MCP server's tools (`tools/list`), calls the ones it needs (`tools/call`) and returns the spoken reply plus the list of calls with arguments and latency.
-- `/dashboard`: the week's schedule by barber, refreshing every 1.5 s; new bookings, reschedules, cancellations, waitlist fills and blocked time flash on screen.
-- `/demo`: simulator and dashboard side by side, the framing used in the video.
-
-The agent uses the default AWS credentials. If you sign in with `aws login`, botocore needs its `crt` extra (already in `requirements.txt` as `boto3[crt]`). Settings:
-- `AWS_PROFILE` and `AWS_REGION` (default `us-east-2`).
-- `FRONTDESK_MODEL`: Bedrock models or inference profiles, comma-separated, in order of preference (default: Nova Pro, then Nova Lite, Nova Micro and Nova 2 Lite). If one has no quota or no access, the agent moves on to the next.
-- `FRONTDESK_AGENT`: `bedrock` (default), `rehearsal` (a simple rule-based agent without the model, to test the demo; it uses the same MCP tools and the screen says "rehearsal mode") or `auto` (Bedrock, and if it fails, rehearsal mode with a notice on screen; this is what the deployment uses).
-- `FRONTDESK_HOSTS`: public domains the MCP server accepts when it runs behind a proxy (e.g. `front-desk.example.com`). Without it, the SDK only accepts `localhost` and answers 421.
-- `FRONTDESK_RATE_PER_IP` and `FRONTDESK_DAILY_LIMIT`: utterances per IP every 10 minutes (default 40) and per day (default 600), to protect the AWS credits.
-- `FRONTDESK_MCP_URL`: the MCP server the agent uses (default: this same server).
+Customer tools are open, like a phone line. Owner tools need the business's API key (`Authorization: Bearer <key>`, created under **Phone line** in the app); on the public demo they're open.
+Every result has a `speech` field with the short sentence to say, plus structured data (`structuredContent` with an `outputSchema`). Tools are annotated (`readOnlyHint`, `destructiveHint`, `title`).
+Dates like "today", "tomorrow", "Friday", "next Monday", "October 23", "10/23"; times like "9", "9 AM", "9:30 p.m.", "noon", "half past 9"; phone numbers in any common format, typed or spoken.
 
 ## How it works
 ```
-Browser (simulator) ──POST /api/conversation──> Agent (Amazon Nova on Bedrock, Converse + tool use)
-                                                   │  tools/list, tools/call (Streamable HTTP)
-                                                   ▼
-Alexa+ / MCP Inspector ──────────POST /mcp──────> MCP server ──> SQLite schedule <── /dashboard (live)
+Customer (browser phone line /b/<business>) ──> Agent: Amazon Nova on Bedrock (Converse + tool use)
+                                                   │ tools/list, tools/call
+Alexa+ / MCP client ──POST /b/<business>/mcp──> MCP server (one tenant per request) ──> that business's SQLite
+Owner ──/app (session cookie)──> owner API /api/b/<business>/... ──────────────────────────┘     └──> live board
 ```
-The agent talks to the MCP server over HTTP exactly like Alexa+ would, so the demo shows the real MCP round trip.
+The platform database (`platform.db`) holds accounts, businesses, sessions and API key hashes. The business being served is a context variable set per request, so the same tools serve every business without mixing their data.
 
-## Status
-- [x] MCP server at `POST /mcp` (Streamable HTTP, MCP spec 2025-11-25)
-- [x] SQLite schedule with a fictional barbershop
-- [x] Nine tools, with tests: booking, cancel, reschedule, waitlist with automatic fill, returning customers, owner time blocks, daily summary
-- [x] Voice simulator with the agent on Amazon Bedrock
-- [x] Live owner dashboard
-- [x] AWS deployment (EC2 + HTTPS + IAM role for Nova), published
+## Pages
+| Page | What it is |
+|---|---|
+| `/` | Product page |
+| `/signup`, `/login` | Create a business, sign in, or open the demo |
+| `/app` | The owner app |
+| `/b/<business>` | The business's phone line (voice simulator) with caller ID |
+| `/b/<business>/board` | Live board (owner only, except the demo) |
+| `/demo` | Demo phone line and live board side by side, the framing used in the video |
+
+The phone line simulates Alexa+ in the browser (the Alexa+ developer tools are in closed preview, which the hackathon rules allow): Web Speech API in en-US, hands-free with pause detection, push-to-talk with <kbd>Space</kbd>, follow-up listening, and a "Behind the voice" list of every MCP call with its latency.
 
 ## Run locally
 Requires Python 3.10 or later.
@@ -73,25 +70,29 @@ pip install -r requirements.txt
 python -m frontdesk.server
 ```
 
-The server starts at `http://127.0.0.1:8000/mcp` with a health check at `http://127.0.0.1:8000/health`.
-Open `http://127.0.0.1:8000/demo` in Chrome or Edge to see the simulator and the dashboard (for the Bedrock agent, run `aws login` first and set `AWS_PROFILE`; to try it without AWS, set `FRONTDESK_AGENT=rehearsal`).
-On Windows, `run-demo.cmd` (Bedrock) and `run-rehearsal.cmd` (no Bedrock) do all of this with a double click.
+Open `http://127.0.0.1:8000` in Chrome or Edge. For the Bedrock agent, run `aws login` first and set `AWS_PROFILE`; to try it without AWS, set `FRONTDESK_AGENT=rehearsal`. On Windows, `run-demo.cmd` (Bedrock) and `run-rehearsal.cmd` (no Bedrock) do all of this with a double click.
 
-Optional settings:
-- `FRONTDESK_DB`: path of the SQLite database (default: `frontdesk.db` in the repository root).
-- `FRONTDESK_DEMO=0`: don't create the sample appointments.
-- `FRONTDESK_NOW=2026-10-23T08:00`: pins the clock, handy for recording the demo.
-- `FRONTDESK_TZ`: the business time zone (default `America/Los_Angeles`).
+Settings:
+- `AWS_PROFILE` and `AWS_REGION` (default `us-east-2`). With `aws login`, botocore needs its `crt` extra (already in `requirements.txt`).
+- `FRONTDESK_MODEL`: Bedrock models or inference profiles, in order of preference (default: Nova Pro, then Nova Lite, Nova Micro and Nova 2 Lite). If one has no quota or no access, the agent moves on to the next.
+- `FRONTDESK_AGENT`: `bedrock` (default), `rehearsal` (rule-based, no model, same MCP tools; the screen says "rehearsal mode") or `auto` (Bedrock, falling back to rehearsal mode with a notice; used by the deployment).
+- `FRONTDESK_DB`: the demo business's database (default `frontdesk.db`). `platform.db` and the `businesses/` folder live next to it.
+- `FRONTDESK_DEMO=0`: no sample appointments in the demo business.
+- `FRONTDESK_NOW=2026-10-23T08:40`: pins the clock (for recording the demo). `FRONTDESK_TZ` overrides every business's time zone.
+- `FRONTDESK_HOSTS`: public domains accepted behind a proxy (otherwise the SDK only accepts `localhost` and answers 421).
+- `FRONTDESK_RATE_PER_IP` and `FRONTDESK_DAILY_LIMIT`: utterances per IP every 10 minutes (default 40) and per day (default 600), to protect the AWS credits.
+- `FRONTDESK_MCP_URL`: run the agent against another MCP server (default: the in-process server of the business being served).
 
 ## Deploy to AWS
-One EC2 instance with HTTPS (Caddy) and an IAM role limited to Amazon Nova, created by CloudFormation. Steps, costs and cleanup in [`deploy/README.md`](deploy/README.md).
+One EC2 instance with HTTPS (Caddy) and an IAM role limited to Amazon Nova, created by CloudFormation. Steps, costs and cleanup in [`deploy/README.md`](deploy/README.md). `deploy/update.cmd` updates it in place; the demo business is reset on each update, owner accounts and their businesses are kept.
 
 ## Test
 ```bash
 python -m pytest -q
+python scripts/check_video_script.py rehearsal   # the demo video script, line by line (or "bedrock" for Amazon Nova)
 ```
 
-To inspect it with the MCP Inspector, connect to `http://127.0.0.1:8000/mcp` using the Streamable HTTP transport.
+To inspect the MCP server with the MCP Inspector, connect to `http://127.0.0.1:8000/b/main-street-barbers/mcp` (Streamable HTTP).
 
 ## License
 MIT

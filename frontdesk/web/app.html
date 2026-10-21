@@ -1,0 +1,865 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Front Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f3f5f2; --panel: #ffffff; --ink: #1b2422; --ink-soft: #5d6a67; --line: #d6dcd8; --line-soft: #e6ebe8;
+    --desk: #0d2a31; --desk-2: #12363f; --desk-text: #eef6f5; --desk-soft: #8fb3b5;
+    --assistant: #35c6d8; --assistant-bg: #e3f6f8; --waitlist: #c98a1b; --waitlist-bg: #fbf1de;
+    --manual: #46524f; --manual-bg: #eef1ef; --ok: #2f8f5b; --ok-bg: #e4f2ea; --error: #c8372d; --error-bg: #fbe7e5;
+    --hour-px: 84px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { font-family: "Archivo", system-ui, sans-serif; color: var(--ink); background: var(--paper); font-size: 15px; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  :focus-visible { outline: 3px solid var(--assistant); outline-offset: 2px; }
+  [hidden] { display: none !important; }
+  .shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); min-height: 100vh; }
+
+  /* sidebar */
+  nav.side {
+    background: radial-gradient(140% 70% at 0% 0%, var(--desk-2), var(--desk) 60%); color: var(--desk-text);
+    padding: 22px 14px; display: flex; flex-direction: column; gap: 18px; position: sticky; top: 0; height: 100vh;
+  }
+  .brand { font-variation-settings: "wdth" 125; font-weight: 750; font-size: 18px; padding: 0 10px; color: var(--desk-text); text-decoration: none; }
+  .switcher { display: grid; gap: 6px; padding: 0 4px; }
+  .switcher select {
+    width: 100%; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14); color: var(--desk-text);
+    border-radius: 10px; padding: 10px; font-weight: 600;
+  }
+  .switcher select option { color: var(--ink); }
+  .switcher small { color: var(--desk-soft); padding: 0 6px; font-size: 12.5px; }
+  .nav { display: grid; gap: 2px; }
+  .nav a {
+    color: #cfe3e2; text-decoration: none; padding: 9px 12px; border-radius: 9px; display: flex; justify-content: space-between;
+    font-weight: 500;
+  }
+  .nav a:hover { background: rgba(255,255,255,.06); color: #fff; }
+  .nav a[aria-current="page"] { background: rgba(53,198,216,.16); color: #fff; box-shadow: inset 3px 0 0 var(--assistant); }
+  .nav .count { font-variant-numeric: tabular-nums; color: var(--desk-soft); font-size: 13px; }
+  .nav hr { border: 0; border-top: 1px solid rgba(255,255,255,.1); margin: 8px 6px; }
+  .me { margin-top: auto; padding: 10px; font-size: 13px; color: var(--desk-soft); display: grid; gap: 6px; }
+  .me button { background: none; border: 0; color: #cfe3e2; padding: 0; text-align: left; cursor: pointer; text-decoration: underline; }
+
+  /* main */
+  main { padding: 26px clamp(16px, 3vw, 40px) 60px; min-width: 0; }
+  header.page { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: flex-end; justify-content: space-between; margin-bottom: 22px; }
+  header.page h1 { margin: 0; font-size: clamp(26px, 3vw, 34px); font-variation-settings: "wdth" 112; font-weight: 700; line-height: 1.05; }
+  header.page p { margin: 6px 0 0; color: var(--ink-soft); }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .btn {
+    border: 1px solid var(--line); background: var(--panel); border-radius: 9px; padding: 9px 14px; cursor: pointer; font-weight: 600;
+    text-decoration: none; color: var(--ink); display: inline-flex; align-items: center; gap: 6px; line-height: 1.2; white-space: nowrap;
+  }
+  .btn:hover { border-color: #b9c2bd; }
+  .btn.primary { background: var(--desk); border-color: var(--desk); color: #fff; }
+  .btn.danger { color: var(--error); }
+  .btn.small { padding: 6px 10px; font-size: 13.5px; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn.menu-toggle { display: none; margin-bottom: 10px; }
+  main a:not(.btn), dialog a { color: var(--desk); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  td.row-btns { white-space: nowrap; width: 1%; }
+  td.row-btns .btn + .btn { margin-left: 6px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+  .panel h2 { font-size: 17px; margin: 0 0 12px; font-variation-settings: "wdth" 105; }
+  .muted { color: var(--ink-soft); }
+  .empty { color: var(--ink-soft); padding: 18px 0; }
+
+  /* overview */
+  .figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 18px; }
+  .figure { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+  .figure b { display: block; font-size: 30px; font-variation-settings: "wdth" 80; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .figure span { color: var(--ink-soft); font-size: 13.5px; }
+  .figure.voice { border-color: var(--assistant); background: linear-gradient(var(--assistant-bg), #fff 70%); }
+  .split { display: grid; grid-template-columns: minmax(0, 3fr) minmax(260px, 2fr); gap: 16px; align-items: start; }
+  ol.agenda { list-style: none; margin: 0; padding: 0; display: grid; }
+  ol.agenda li {
+    display: grid; grid-template-columns: 74px minmax(0, 1fr) auto; gap: 12px; align-items: center;
+    padding: 10px 0; border-top: 1px solid var(--line-soft); cursor: pointer;
+  }
+  ol.agenda li:first-child { border-top: 0; }
+  ol.agenda time { font-variant-numeric: tabular-nums; font-weight: 650; font-variation-settings: "wdth" 85; font-size: 16px; }
+  ol.agenda .who { font-weight: 600; }
+  ol.agenda .what { color: var(--ink-soft); font-size: 13.5px; }
+  ol.agenda li.past { opacity: .55; }
+  .tag { font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+  .tag.assistant { background: var(--assistant-bg); color: #0d6f7c; }
+  .tag.waitlist { background: var(--waitlist-bg); color: #8a5a06; }
+  .tag.manual, .tag.history { background: var(--manual-bg); color: var(--manual); }
+  .tag.completed { background: var(--ok-bg); color: var(--ok); }
+  .tag.no_show, .tag.cancelled { background: var(--error-bg); color: var(--error); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--ink-soft); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+
+  /* calendar */
+  .calbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .calbar .day-title { font-size: 18px; font-weight: 650; margin: 0 6px; font-variation-settings: "wdth" 100; }
+  .calbar input[type=date] { border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px; background: #fff; }
+  .calbar label.toggle { display: inline-flex; gap: 6px; align-items: center; color: var(--ink-soft); font-size: 14px; margin-left: auto; }
+  .cal { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: auto; max-height: calc(100vh - 210px); }
+  .cal-head, .cal-body { display: grid; grid-template-columns: 58px repeat(var(--cols), minmax(150px, 1fr)); }
+  .cal-head { position: sticky; top: 0; z-index: 3; background: #fff; border-bottom: 1px solid var(--line); }
+  .cal-head div { padding: 10px 12px; font-weight: 650; border-left: 1px solid var(--line-soft); }
+  .cal-head div:first-child { border-left: 0; }
+  .hours { position: relative; }
+  .hours span:first-child { transform: none; }
+  .hours span { position: absolute; right: 8px; transform: translateY(-50%); font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+  .col {
+    position: relative; border-left: 1px solid var(--line-soft); cursor: copy;
+    background-image: repeating-linear-gradient(to bottom, var(--line-soft) 0 1px, transparent 1px calc(var(--hour-px) / 2));
+  }
+  .col .closed { position: absolute; left: 0; right: 0; background: repeating-linear-gradient(135deg, #f1f3f2 0 6px, #e8ece9 6px 12px); }
+  .appt {
+    position: absolute; left: 4px; right: 4px; border-radius: 8px; padding: 4px 8px; overflow: hidden; cursor: pointer;
+    background: var(--manual-bg); border-left: 4px solid var(--manual); font-size: 13px; line-height: 1.25; text-align: left;
+    border-top: 0; border-right: 0; border-bottom: 0;
+  }
+  .appt.assistant { background: var(--assistant-bg); border-left-color: var(--assistant); }
+  .appt.waitlist { background: var(--waitlist-bg); border-left-color: var(--waitlist); }
+  .appt.completed { background: var(--ok-bg); border-left-color: var(--ok); }
+  .appt.no_show { background: var(--error-bg); border-left-color: var(--error); }
+  .appt.cancelled { background: #fff; border: 1px dashed #c3cbc7; border-left: 4px dashed #c3cbc7; color: var(--ink-soft); text-decoration: line-through; }
+  .appt b { display: block; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .appt small { color: var(--ink-soft); white-space: nowrap; }
+  .block {
+    position: absolute; left: 4px; right: 4px; border-radius: 8px; padding: 4px 8px; font-size: 12.5px; color: #5c4a1d; cursor: pointer;
+    background: repeating-linear-gradient(135deg, #f6efd9 0 7px, #efe4c4 7px 14px); border: 1px solid #e2d3a6; text-align: left;
+  }
+  .now-line { position: absolute; left: 0; right: 0; border-top: 2px solid var(--error); z-index: 2; pointer-events: none; }
+
+  /* tables */
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; align-items: center; }
+  .toolbar input[type=search] { flex: 1; min-width: 220px; border: 1px solid var(--line); border-radius: 9px; padding: 9px 12px; background: #fff; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); }
+  .table-wrap { border: 1px solid var(--line); border-radius: 14px; overflow: auto; background: var(--panel); }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+  th { font-size: 13px; color: var(--ink-soft); font-weight: 600; background: #fafbfa; position: sticky; top: 0; }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr.clickable { cursor: pointer; }
+  tbody tr.clickable:hover { background: #f8faf9; }
+  td.num { font-variant-numeric: tabular-nums; }
+  td input, td select { border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; background: #fff; width: 100%; min-width: 70px; }
+  tr.archived td { color: var(--ink-soft); }
+
+  /* forms */
+  .form { display: grid; gap: 14px; }
+  .form .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .form label { display: grid; gap: 5px; font-size: 13.5px; font-weight: 600; }
+  .form input, .form select, .form textarea {
+    border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; background: #fff; font-weight: 400; font-size: 15px; width: 100%;
+  }
+  .form textarea { min-height: 72px; resize: vertical; }
+  .form .hint { font-weight: 400; color: var(--ink-soft); font-size: 12.5px; }
+  .form .error { color: var(--error); margin: 0; min-height: 1.2em; }
+  .hours-grid { display: grid; grid-template-columns: 140px auto 1fr 1fr; gap: 10px 14px; align-items: center; max-width: 620px; }
+  .hours-grid input[type=time] { border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; background: #fff; }
+  .suggest { border: 1px solid var(--line); border-radius: 10px; background: #fff; max-height: 180px; overflow: auto; }
+  .suggest button { display: flex; justify-content: space-between; width: 100%; border: 0; background: none; padding: 9px 12px; cursor: pointer; text-align: left; }
+  .suggest button:hover, .suggest button:focus { background: #f2f6f5; }
+  .slots { display: flex; flex-wrap: wrap; gap: 6px; }
+  .slots button { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 6px 9px; cursor: pointer; font-variant-numeric: tabular-nums; font-size: 13.5px; }
+  .slots button[aria-pressed="true"] { background: var(--desk); color: #fff; border-color: var(--desk); }
+  code.copy { display: block; background: #0f1d20; color: #d9f3f4; padding: 12px 14px; border-radius: 10px; overflow-wrap: anywhere; font-size: 14px; }
+  .steps { margin: 0; padding-left: 20px; display: grid; gap: 8px; color: var(--ink); }
+
+  /* drawer + dialog */
+  dialog { border: 0; border-radius: 16px; padding: 0; width: min(560px, calc(100vw - 24px)); box-shadow: 0 30px 80px -20px rgba(13,42,49,.45); }
+  dialog::backdrop { background: rgba(13, 42, 49, .42); }
+  dialog .dhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 18px 20px 4px; }
+  dialog .dhead h2 { margin: 0; font-size: 21px; font-variation-settings: "wdth" 108; }
+  dialog .dbody { padding: 10px 20px 20px; }
+  dialog .close { border: 0; background: none; font-size: 22px; line-height: 1; cursor: pointer; color: var(--ink-soft); padding: 4px 6px; }
+  dl.facts { display: grid; grid-template-columns: 110px 1fr; gap: 6px 12px; margin: 0 0 16px; }
+  dl.facts dt { color: var(--ink-soft); }
+  dl.facts dd { margin: 0; font-weight: 500; }
+  .row-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--desk); color: #fff; padding: 11px 18px;
+    border-radius: 10px; z-index: 50; box-shadow: 0 12px 30px -10px rgba(0,0,0,.4); font-weight: 500;
+  }
+  .toast.bad { background: var(--error); }
+  details.more summary { cursor: pointer; font-weight: 600; margin: 4px 0 10px; }
+
+  @media (max-width: 920px) {
+    .shell { grid-template-columns: 1fr; }
+    nav.side { position: fixed; inset: 0 auto 0 0; width: 260px; z-index: 40; transform: translateX(-100%); transition: transform .2s; }
+    nav.side.open { transform: none; }
+    .btn.menu-toggle { display: inline-flex; }
+    .split { grid-template-columns: 1fr; }
+    .form .two { grid-template-columns: 1fr; }
+    .hours-grid { grid-template-columns: 1fr 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav class="side" id="side" aria-label="Main">
+    <a class="brand" href="/app">Front Desk</a>
+    <div class="switcher">
+      <select id="business" aria-label="Business"></select>
+      <small id="business-kind"></small>
+    </div>
+    <div class="nav" id="nav">
+      <a href="#" data-section="today">Today</a>
+      <a href="#" data-section="calendar">Calendar</a>
+      <a href="#" data-section="customers">Customers <span class="count" id="count-customers"></span></a>
+      <a href="#" data-section="waitlist">Waitlist <span class="count" id="count-waitlist"></span></a>
+      <hr>
+      <a href="#" data-section="services">Services</a>
+      <a href="#" data-section="team">Team</a>
+      <a href="#" data-section="hours">Opening hours</a>
+      <hr>
+      <a href="#" data-section="phone">Phone line</a>
+      <a href="#" data-section="settings">Settings</a>
+    </div>
+    <div class="me"><span id="me"></span><button id="add-business" type="button">Add another business</button><button id="logout" type="button">Sign out</button></div>
+  </nav>
+  <main id="main" tabindex="-1"></main>
+</div>
+
+<dialog id="dialog" aria-labelledby="dialog-title">
+  <div class="dhead"><h2 id="dialog-title"></h2><button class="close" type="button" aria-label="Close" data-close>×</button></div>
+  <div class="dbody" id="dialog-body"></div>
+</dialog>
+
+<script>
+(() => {
+  // ------------------------------------------------------------ helpers
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const main = $("#main");
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const money = (c) => (c % 100 === 0 ? `$${(c / 100).toLocaleString()}` : `$${(c / 100).toFixed(2)}`);
+  const hhmm = (iso) => iso.slice(11, 16);
+  const ampm = (t) => { const [h, m] = t.split(":").map(Number); return `${h % 12 || 12}${m ? ":" + String(m).padStart(2, "0") : ""} ${h < 12 ? "AM" : "PM"}`; };
+  const longDay = (d) => new Date(d + "T12:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  const shortDay = (d) => new Date(d + "T12:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  const addDays = (d, n) => { const x = new Date(d + "T12:00"); x.setDate(x.getDate() + n); return x.toISOString().slice(0, 10); };
+  const phoneText = (p) => p && p.startsWith("+1") && p.length === 12 ? `(${p.slice(2, 5)}) ${p.slice(5, 8)}-${p.slice(8)}` : (p || "—");
+  const SOURCE = { assistant: "Voice assistant", waitlist: "From waitlist", manual: "Added by hand", history: "Past visit" };
+  const STATUS = { confirmed: "Confirmed", completed: "Completed", no_show: "No-show", cancelled: "Cancelled" };
+
+  let toastTimer = 0;
+  const toast = (msg, bad = false) => {
+    document.querySelectorAll(".toast").forEach(t => t.remove());
+    const t = document.createElement("div"); t.className = `toast${bad ? " bad" : ""}`; t.setAttribute("role", "status"); t.textContent = msg;
+    document.body.append(t); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.remove(), 3200);
+  };
+
+  const state = { me: null, businesses: [], slug: null, setup: null, section: "today", day: null, showCancelled: false };
+
+  async function api(path, opts = {}) {
+    const init = { method: opts.method || "GET", headers: {} };
+    if (opts.body !== undefined) { init.headers["Content-Type"] = "application/json"; init.body = JSON.stringify(opts.body); }
+    const url = path.startsWith("/api/") ? path : `/api/b/${state.slug}${path}`;
+    const r = await fetch(url, init);
+    if (r.status === 401) { location.href = "/login"; throw new Error("Sign in first."); }
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `Something went wrong (${r.status}).`);
+    return data;
+  }
+
+  // ------------------------------------------------------------ dialog
+  const dialog = $("#dialog");
+  const openDialog = (title, html, onOpen) => {
+    $("#dialog-title").textContent = title;
+    $("#dialog-body").innerHTML = html;
+    if (!dialog.open) dialog.showModal();
+    onOpen && onOpen($("#dialog-body"));
+  };
+  dialog.addEventListener("click", (e) => { if (e.target === dialog || e.target.closest("[data-close]")) dialog.close(); });
+
+  // ------------------------------------------------------------ routing
+  const SECTIONS = { today, calendar, customers, waitlist, services, team, hours, phone, settings };
+  function go(section) {
+    state.section = section;
+    location.hash = `${state.slug}/${section}`;
+  }
+  async function route() {
+    const [slug, section] = location.hash.slice(1).split("/");
+    if (slug && state.businesses.some(b => b.slug === slug) && slug !== state.slug) { state.slug = slug; await loadSetup(); }
+    state.section = SECTIONS[section] ? section : "today";
+    document.querySelectorAll("#nav a").forEach(a => {
+      if (a.dataset.section === state.section) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+    });
+    $("#side").classList.remove("open");
+    try { await SECTIONS[state.section](); } catch (e) { main.innerHTML = `<p class="empty">${esc(e.message)}</p>`; }
+    main.focus({ preventScroll: true });
+  }
+  document.querySelectorAll("#nav a").forEach(a => a.addEventListener("click", (e) => { e.preventDefault(); go(a.dataset.section); }));
+  window.addEventListener("hashchange", route);
+
+  const header = (title, sub, actions = "") =>
+    `<header class="page"><div><button class="btn small menu-toggle" type="button" data-menu aria-label="Menu">Menu</button><h1>${esc(title)}</h1>${sub ? `<p>${sub}</p>` : ""}</div><div class="actions">${actions}</div></header>`;
+  main.addEventListener("click", (e) => { if (e.target.closest("[data-menu]")) $("#side").classList.add("open"); });
+
+  async function loadSetup() {
+    state.setup = await api("/setup");
+    const s = state.setup;
+    $("#business-kind").textContent = `${s.type_label} · ${s.timezone.replace(/_/g, " ")}`;
+    $("#business").value = state.slug;
+    state.day = state.day || s.now.slice(0, 10);
+    document.title = `${s.name} · Front Desk`;
+    refreshCounts();
+  }
+  async function refreshCounts() {
+    try {
+      const [c, w] = await Promise.all([api("/customers"), api("/waitlist")]);
+      $("#count-customers").textContent = c.customers.length || "";
+      $("#count-waitlist").textContent = w.waitlist.filter(x => x.status === "waiting").length || "";
+    } catch (_) {}
+  }
+
+  // ------------------------------------------------------------ Today
+  async function today() {
+    const [stats, cal] = await Promise.all([api("/stats"), api(`/calendar?start=${state.setup.now.slice(0, 10)}&days=1`)]);
+    const s = state.setup, now = cal.now, day = cal.days[0];
+    const appts = day.appointments.filter(a => a.status !== "cancelled");
+    const share = stats.booked_total_30d ? Math.round(100 * stats.booked_by_assistant_30d / stats.booked_total_30d) : 0;
+    main.innerHTML = header(`Today at ${s.name}`, `${longDay(day.date)}${day.open ? ` · open ${ampm(day.opens)} to ${ampm(day.closes)}` : " · closed today"}`,
+      `<a class="btn" href="/b/${state.slug}/board" target="_blank" rel="noopener">Live board</a><button class="btn primary" data-new>New appointment</button>`) + `
+      <div class="figures">
+        <div class="figure"><b>${stats.today.appointments}</b><span>appointments today · ${money(stats.today.revenue_cents)}</span></div>
+        <div class="figure"><b>${stats.week.appointments}</b><span>this week · ${money(stats.week.revenue_cents)}</span></div>
+        <div class="figure voice"><b>${stats.booked_total_30d ? share + "%" : "—"}</b><span>booked by the voice assistant (30 days)</span></div>
+        <div class="figure"><b>${stats.waitlist_waiting}</b><span>waiting on the waitlist · ${stats.waitlist_filled} slots filled</span></div>
+      </div>
+      <div class="split">
+        <section class="panel"><h2>Agenda</h2>${appts.length ? `<ol class="agenda">${appts.map(a => agendaItem(a, now)).join("")}</ol>` :
+          `<p class="empty">Nothing booked yet today. Bookings from the phone line show up here as they happen.</p>`}</section>
+        <section class="panel"><h2>At a glance</h2>
+          <p>${esc(stats.summary.next ? `Next up: ${stats.summary.next.customer}, ${stats.summary.next.service.toLowerCase()} at ${ampm(hhmm(stats.summary.next.start))} with ${stats.summary.next.staff}.` : "No more appointments today.")}</p>
+          <dl class="facts">
+            ${Object.entries(stats.summary.free_minutes_by_staff).map(([n, m]) => `<dt>${esc(n)}</dt><dd>${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""} free</dd>`).join("")}
+            <dt>Customers</dt><dd>${stats.customers}</dd>
+            <dt>No-shows</dt><dd>${stats.no_shows_30d} in 30 days</dd>
+          </dl>
+          <div class="legend"><span><i style="background:var(--assistant)"></i>Voice assistant</span><span><i style="background:var(--waitlist)"></i>Waitlist</span><span><i style="background:var(--manual)"></i>By hand</span></div>
+        </section>
+      </div>`;
+    main.querySelectorAll("[data-appt]").forEach(li => li.addEventListener("click", () => showAppointment(Number(li.dataset.appt))));
+    main.querySelector("[data-new]").addEventListener("click", () => newAppointment({}));
+  }
+  const agendaItem = (a, now) => `<li data-appt="${a.id}" class="${a.end < now ? "past" : ""}" tabindex="0">
+      <time>${ampm(hhmm(a.start))}</time>
+      <div><div class="who">${esc(a.customer)}</div><div class="what">${esc(a.service)} with ${esc(a.staff)}${a.notes ? ` · ${esc(a.notes)}` : ""}</div></div>
+      <span class="tag ${a.status === "confirmed" ? a.source : a.status}">${a.status === "confirmed" ? SOURCE[a.source] : STATUS[a.status]}</span></li>`;
+
+  // ------------------------------------------------------------ Calendar
+  async function calendar() {
+    const cal = await api(`/calendar?start=${state.day}&days=1`);
+    const day = cal.days[0], staff = cal.staff_detail;
+    const toMin = (t) => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
+    const allHours = state.setup.hours.filter(h => h.opens);
+    const first = Math.min(...allHours.map(h => toMin(h.opens)), day.open ? toMin(day.opens) : 9 * 60);
+    const last = Math.max(...allHours.map(h => toMin(h.closes)), day.open ? toMin(day.closes) : 18 * 60);
+    const startMin = Math.floor(first / 60) * 60, endMin = Math.ceil(last / 60) * 60;
+    const pxPerMin = 84 / 60, height = (endMin - startMin) * pxPerMin;
+    const y = (t) => (toMin(t) - startMin) * pxPerMin;
+    main.innerHTML = header("Calendar", `${longDay(day.date)}${day.open ? ` · open ${ampm(day.opens)} to ${ampm(day.closes)}` : " · closed"}`,
+      `<button class="btn" data-block>Block time</button><button class="btn primary" data-new>New appointment</button>`) + `
+      <div class="calbar">
+        <button class="btn small" data-step="-1" aria-label="Previous day">‹ Previous</button>
+        <button class="btn small" data-today>Today</button>
+        <button class="btn small" data-step="1" aria-label="Next day">Next ›</button>
+        <input type="date" value="${day.date}" aria-label="Go to date" data-date>
+        <span class="day-title">${shortDay(day.date)}</span>
+        <label class="toggle"><input type="checkbox" data-cancelled ${state.showCancelled ? "checked" : ""}> Show cancelled</label>
+      </div>
+      <div class="cal" style="--cols:${staff.length}">
+        <div class="cal-head"><div></div>${staff.map(p => `<div>${esc(p.name)}</div>`).join("")}</div>
+        <div class="cal-body" style="height:${height}px">
+          <div class="hours">${Array.from({ length: (endMin - startMin) / 60 + 1 }, (_, i) => `<span style="top:${i * 84}px">${ampm(`${String(startMin / 60 + i).padStart(2, "0")}:00`)}</span>`).join("")}</div>
+          ${staff.map(p => `<div class="col" data-staff="${p.id}" style="height:${height}px" title="Click an empty spot to book ${esc(p.name)}">
+            ${day.open ? `<div class="closed" style="top:0;height:${y(day.opens)}px"></div><div class="closed" style="top:${y(day.closes)}px;bottom:0"></div>` : `<div class="closed" style="top:0;bottom:0"></div>`}
+            ${day.blocks.filter(b => b.staff === p.name).map(b => `<button class="block" data-blockid="${b.id}" style="top:${y(hhmm(b.start))}px;height:${y(hhmm(b.end)) - y(hhmm(b.start))}px">Blocked ${ampm(hhmm(b.start))}–${ampm(hhmm(b.end))}${b.reason ? `: ${esc(b.reason)}` : ""}</button>`).join("")}
+            ${day.appointments.filter(a => a.staff === p.name && (state.showCancelled || a.status !== "cancelled")).map(a => {
+              const top = y(hhmm(a.start)), h = Math.max(26, y(hhmm(a.end)) - top - 2);
+              const cls = a.status === "confirmed" ? (a.source === "history" ? "manual" : a.source) : a.status;
+              return `<button class="appt ${cls}" data-appt="${a.id}" style="top:${top}px;height:${h}px"><b>${esc(a.customer)}</b><small>${ampm(hhmm(a.start))} · ${esc(a.service)}</small></button>`;
+            }).join("")}
+            ${day.date === cal.now.slice(0, 10) && toMin(hhmm(cal.now)) >= startMin && toMin(hhmm(cal.now)) <= endMin ? `<div class="now-line" style="top:${y(hhmm(cal.now))}px"></div>` : ""}
+          </div>`).join("")}
+        </div>
+      </div>
+      <p class="legend" style="margin-top:10px"><span><i style="background:var(--assistant)"></i>Booked by the voice assistant</span><span><i style="background:var(--waitlist)"></i>Filled from the waitlist</span><span><i style="background:var(--manual)"></i>Added by hand</span><span><i style="background:var(--ok)"></i>Completed</span><span><i style="background:var(--error)"></i>No-show</span></p>`;
+    main.querySelectorAll("[data-step]").forEach(b => b.addEventListener("click", () => { state.day = addDays(state.day, Number(b.dataset.step)); calendar(); }));
+    main.querySelector("[data-today]").addEventListener("click", () => { state.day = cal.now.slice(0, 10); calendar(); });
+    main.querySelector("[data-date]").addEventListener("change", (e) => { if (e.target.value) { state.day = e.target.value; calendar(); } });
+    main.querySelector("[data-cancelled]").addEventListener("change", (e) => { state.showCancelled = e.target.checked; calendar(); });
+    main.querySelector("[data-new]").addEventListener("click", () => newAppointment({ date: state.day }));
+    main.querySelector("[data-block]").addEventListener("click", () => blockTime({ date: state.day }));
+    main.querySelectorAll("[data-appt]").forEach(b => b.addEventListener("click", (e) => { e.stopPropagation(); showAppointment(Number(b.dataset.appt)); }));
+    main.querySelectorAll("[data-blockid]").forEach(b => b.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!confirm("Remove this block? The time becomes bookable again.")) return;
+      await api(`/blocks/${b.dataset.blockid}`, { method: "DELETE" }); toast("Block removed."); calendar();
+    }));
+    main.querySelectorAll(".col").forEach(col => col.addEventListener("click", (e) => {
+      if (e.target !== col) return;
+      const minutes = startMin + Math.floor((e.offsetY / pxPerMin) / 15) * 15;
+      const t = `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+      newAppointment({ date: state.day, time: t, staff_id: Number(col.dataset.staff) });
+    }));
+  }
+
+  // ------------------------------------------------------------ appointment: create
+  function serviceOptions(selected) {
+    return state.setup.services.filter(s => s.active).map(s => `<option value="${s.id}" ${s.id === selected ? "selected" : ""}>${esc(s.name)} · ${s.duration_min} min · ${money(s.price_cents)}</option>`).join("");
+  }
+  function staffOptions(selected, anyone = true) {
+    return (anyone ? `<option value="">Anyone free</option>` : "") + state.setup.staff.filter(p => p.active).map(p => `<option value="${p.id}" ${p.id === selected ? "selected" : ""}>${esc(p.name)}</option>`).join("");
+  }
+
+  function newAppointment({ date, time, staff_id, customer }) {
+    openDialog("New appointment", `
+      <form class="form" novalidate>
+        <div class="two">
+          <label>Customer name <input name="customer_name" autocomplete="off" required value="${esc(customer?.name || "")}"></label>
+          <label>Phone <input name="phone" type="tel" autocomplete="off" placeholder="(310) 555-0142" value="${esc(customer ? phoneText(customer.phone) : "")}"></label>
+        </div>
+        <div class="suggest" hidden></div>
+        <label>Service <select name="service_id" required>${serviceOptions()}</select></label>
+        <div class="two">
+          <label>${esc(cap(state.setup.staff_noun))} <select name="staff_id">${staffOptions(staff_id)}</select></label>
+          <label>Date <input type="date" name="date" value="${date || state.setup.now.slice(0, 10)}" required></label>
+        </div>
+        <label>Time <input type="time" name="time" step="900" value="${time || ""}" required><span class="hint">Or pick an open time:</span></label>
+        <div class="slots" aria-label="Open times"></div>
+        <label>Notes <textarea name="notes" placeholder="Anything the team should know"></textarea></label>
+        <p class="error" role="alert"></p>
+        <div class="row-actions"><button class="btn primary" type="submit">Book appointment</button><button class="btn" type="button" data-close>Cancel</button></div>
+      </form>`, (body) => {
+      const form = $("form", body), suggest = $(".suggest", body), slotsBox = $(".slots", body);
+      const loadSlots = async () => {
+        const f = new FormData(form);
+        if (!f.get("date") || !f.get("service_id")) return;
+        try {
+          const { slots } = await api(`/slots?date=${f.get("date")}&service_id=${f.get("service_id")}&staff_id=${f.get("staff_id") || ""}`);
+          const times = [...new Set(slots.map(s => s.time))].slice(0, 24);
+          slotsBox.innerHTML = times.length ? times.map(t => `<button type="button" data-t="${t}" aria-pressed="${t === form.time.value}">${ampm(t)}</button>`).join("") : `<span class="muted">No open times that day.</span>`;
+        } catch (e) { slotsBox.innerHTML = `<span class="muted">${esc(e.message)}</span>`; }
+      };
+      slotsBox.addEventListener("click", (e) => { const b = e.target.closest("[data-t]"); if (!b) return; form.time.value = b.dataset.t; slotsBox.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b)); });
+      ["date", "service_id", "staff_id"].forEach(n => form[n].addEventListener("change", loadSlots));
+      loadSlots();
+      // find existing customers by name or phone
+      let timer = 0;
+      const lookup = () => { clearTimeout(timer); timer = setTimeout(async () => {
+        const q = form.customer_name.value.trim() || form.phone.value.trim();
+        if (q.length < 2) { suggest.hidden = true; return; }
+        const { customers } = await api(`/customers?q=${encodeURIComponent(q)}`);
+        suggest.hidden = !customers.length;
+        suggest.innerHTML = customers.slice(0, 6).map(c => `<button type="button" data-c='${esc(JSON.stringify({ name: c.name, phone: c.phone }))}'><span>${esc(c.name)}</span><span class="muted">${phoneText(c.phone)}</span></button>`).join("");
+      }, 200); };
+      form.customer_name.addEventListener("input", lookup); form.phone.addEventListener("input", lookup);
+      suggest.addEventListener("click", (e) => { const b = e.target.closest("[data-c]"); if (!b) return; const c = JSON.parse(b.dataset.c); form.customer_name.value = c.name; form.phone.value = phoneText(c.phone); suggest.hidden = true; });
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = Object.fromEntries(new FormData(form));
+        try {
+          const { appointment } = await api("/appointments", { method: "POST", body: { ...f, service_id: Number(f.service_id), staff_id: f.staff_id ? Number(f.staff_id) : null } });
+          dialog.close(); toast(`Booked: ${appointment.customer}, ${shortDay(appointment.start.slice(0, 10))} at ${ampm(hhmm(appointment.start))} with ${appointment.staff}.`);
+          state.day = appointment.start.slice(0, 10); refreshCounts(); route();
+        } catch (err) { $(".error", form).textContent = err.message; }
+      });
+      form.customer_name.focus();
+    });
+  }
+  const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+  // ------------------------------------------------------------ appointment: view / edit
+  async function findAppointment(id) {
+    const cal = await api(`/calendar?start=${state.day || state.setup.now.slice(0, 10)}&days=1`);
+    let a = cal.days[0].appointments.find(x => x.id === id);
+    if (!a) {
+      const today = await api(`/calendar?start=${state.setup.now.slice(0, 10)}&days=31`);
+      for (const d of today.days) { a = d.appointments.find(x => x.id === id); if (a) break; }
+    }
+    return a;
+  }
+  async function showAppointment(id, known) {
+    const a = known || await findAppointment(id);
+    if (!a) return toast("That appointment isn't in the next month. Open it from the customer's history.", true);
+    const confirmed = a.status === "confirmed";
+    openDialog(`${a.customer}`, `
+      <dl class="facts">
+        <dt>When</dt><dd>${longDay(a.start.slice(0, 10))}, ${ampm(hhmm(a.start))}–${ampm(hhmm(a.end))}</dd>
+        <dt>Service</dt><dd>${esc(a.service)} · ${money(a.price_cents)}</dd>
+        <dt>${esc(cap(state.setup.staff_noun))}</dt><dd>${esc(a.staff)}</dd>
+        <dt>Phone</dt><dd>${a.phone ? `<a href="tel:${esc(a.phone)}">${phoneText(a.phone)}</a>` : "—"}</dd>
+        <dt>Booked</dt><dd>${SOURCE[a.source] || a.source}</dd>
+        <dt>Status</dt><dd><span class="tag ${confirmed ? a.source : a.status}">${STATUS[a.status]}</span></dd>
+      </dl>
+      <form class="form" data-notes><label>Notes <textarea name="notes">${esc(a.notes)}</textarea></label></form>
+      <div class="row-actions">
+        ${confirmed ? `<button class="btn" data-status="completed">Mark completed</button><button class="btn" data-status="no_show">No-show</button><button class="btn danger" data-status="cancelled">Cancel appointment</button>` :
+          `<button class="btn" data-status="confirmed">Restore as confirmed</button>`}
+        <button class="btn" data-save-notes>Save notes</button>
+      </div>
+      ${confirmed ? `<details class="more" style="margin-top:14px"><summary>Move or change</summary>
+        <form class="form" data-move>
+          <div class="two"><label>Date <input type="date" name="date" value="${a.start.slice(0, 10)}"></label><label>Time <input type="time" name="time" step="900" value="${hhmm(a.start)}"></label></div>
+          <div class="two"><label>${esc(cap(state.setup.staff_noun))} <select name="staff_id">${staffOptions(a.staff_id, false)}</select></label><label>Service <select name="service_id">${serviceOptions(a.service_id)}</select></label></div>
+          <p class="error" role="alert"></p>
+          <div class="row-actions"><button class="btn primary" type="submit">Save changes</button></div>
+        </form></details>` : ""}`, (body) => {
+      const patch = async (changes, msg) => {
+        try {
+          const r = await api(`/appointments/${a.id}`, { method: "PATCH", body: changes });
+          dialog.close();
+          const filled = r.filled_from_waitlist || [];
+          toast(filled.length ? `${msg} The slot went to ${filled[0].customer} from the waitlist.` : msg);
+          route();
+        } catch (e) { toast(e.message, true); }
+      };
+      body.querySelectorAll("[data-status]").forEach(b => b.addEventListener("click", () => {
+        const s = b.dataset.status;
+        if (s === "cancelled" && !confirm(`Cancel ${a.customer}'s appointment?`)) return;
+        patch({ status: s }, { completed: "Marked completed.", no_show: "Marked as no-show.", cancelled: "Appointment cancelled.", confirmed: "Appointment restored." }[s]);
+      }));
+      $("[data-save-notes]", body).addEventListener("click", () => patch({ notes: $("[data-notes] textarea", body).value }, "Notes saved."));
+      const move = $("[data-move]", body);
+      move && move.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = Object.fromEntries(new FormData(move));
+        try {
+          const r = await api(`/appointments/${a.id}`, { method: "PATCH", body: { date: f.date, time: f.time, staff_id: Number(f.staff_id), service_id: Number(f.service_id) } });
+          dialog.close(); state.day = r.appointment.start.slice(0, 10);
+          toast(`Moved to ${shortDay(state.day)} at ${ampm(hhmm(r.appointment.start))} with ${r.appointment.staff}.`); route();
+        } catch (err) { $(".error", move).textContent = err.message; }
+      });
+    });
+  }
+
+  // ------------------------------------------------------------ block time
+  function blockTime({ date }) {
+    openDialog("Block time", `
+      <form class="form" novalidate>
+        <label>${esc(cap(state.setup.staff_noun))} <select name="staff_id">${staffOptions(null, false)}</select></label>
+        <label>Date <input type="date" name="date" value="${date}"></label>
+        <div class="two"><label>From <input type="time" name="start" value="12:00" step="900"></label><label>To <input type="time" name="end" value="13:00" step="900"></label></div>
+        <label>Reason <input name="reason" placeholder="Lunch, day off, training"></label>
+        <p class="error" role="alert"></p>
+        <div class="row-actions"><button class="btn primary" type="submit">Block time</button><button class="btn" type="button" data-close>Cancel</button></div>
+      </form>`, (body) => {
+      const form = $("form", body);
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = Object.fromEntries(new FormData(form));
+        try {
+          const { block } = await api("/blocks", { method: "POST", body: { ...f, staff_id: Number(f.staff_id) } });
+          dialog.close();
+          toast(block.conflicts.length ? `Blocked. ${block.conflicts.length} appointment(s) are still booked in that time.` : "Time blocked.", block.conflicts.length > 0);
+          route();
+        } catch (err) { $(".error", form).textContent = err.message; }
+      });
+    });
+  }
+
+  // ------------------------------------------------------------ Customers
+  async function customers(query = "") {
+    const { customers } = await api(`/customers?q=${encodeURIComponent(query)}`);
+    const noun = state.setup.customer_noun;
+    if (!main.querySelector("[data-customers]")) {
+      main.innerHTML = header("Customers", `Everyone who booked by phone or was added by hand. The phone number is how the receptionist recognizes them.`,
+        `<button class="btn primary" data-add>Add ${esc(noun)}</button>`) + `
+        <div class="toolbar"><input type="search" placeholder="Search by name, phone or email" aria-label="Search customers" data-search value="${esc(query)}"></div>
+        <div data-customers></div>`;
+      let t = 0;
+      main.querySelector("[data-search]").addEventListener("input", (e) => { clearTimeout(t); t = setTimeout(() => customers(e.target.value), 180); });
+      main.querySelector("[data-add]").addEventListener("click", () => editCustomer(null));
+    }
+    const box = main.querySelector("[data-customers]");
+    box.innerHTML = customers.length ? `<div class="table-wrap"><table>
+      <thead><tr><th>Name</th><th>Phone</th><th>Visits</th><th>Last visit</th><th>Next</th><th>Spent</th></tr></thead>
+      <tbody>${customers.map(c => `<tr class="clickable" data-id="${c.id}" tabindex="0"><td><b>${esc(c.name)}</b>${c.notes ? `<div class="muted">${esc(c.notes)}</div>` : ""}</td>
+        <td>${phoneText(c.phone)}</td><td class="num">${c.visits || 0}${c.no_shows ? ` <span class="tag no_show">${c.no_shows} no-show</span>` : ""}</td>
+        <td>${c.last_visit ? shortDay(c.last_visit.slice(0, 10)) : "—"}</td><td>${c.next_visit ? `${shortDay(c.next_visit.slice(0, 10))}, ${ampm(hhmm(c.next_visit))}` : "—"}</td>
+        <td class="num">${money(c.spent_cents || 0)}</td></tr>`).join("")}</tbody></table></div>` :
+      `<p class="empty">${query ? "Nobody matches that search." : `No ${esc(noun)}s yet. They're added automatically when someone books by phone.`}</p>`;
+    box.querySelectorAll("[data-id]").forEach(tr => {
+      const open = () => showCustomer(Number(tr.dataset.id));
+      tr.addEventListener("click", open); tr.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
+    });
+  }
+
+  async function showCustomer(id) {
+    const { customer: c } = await api(`/customers/${id}`);
+    openDialog(c.name, `
+      <dl class="facts"><dt>Phone</dt><dd><a href="tel:${esc(c.phone)}">${phoneText(c.phone)}</a></dd><dt>Email</dt><dd>${esc(c.email) || "—"}</dd><dt>Since</dt><dd>${shortDay(c.created_at.slice(0, 10))}</dd></dl>
+      <div class="row-actions" style="margin-bottom:14px"><button class="btn primary" data-book>Book for ${esc(c.name.split(" ")[0])}</button><button class="btn" data-edit>Edit details</button></div>
+      <h3 style="margin:0 0 8px;font-size:15px">History</h3>
+      ${c.appointments.length ? `<ol class="agenda">${c.appointments.map(a => `<li data-appt="${a.id}" tabindex="0"><time>${shortDay(a.start.slice(0, 10))}</time>
+        <div><div class="who">${esc(a.service)} · ${ampm(hhmm(a.start))}</div><div class="what">with ${esc(a.staff)} · ${money(a.price_cents)}${a.notes ? ` · ${esc(a.notes)}` : ""}</div></div>
+        <span class="tag ${a.status === "confirmed" ? a.source : a.status}">${STATUS[a.status]}</span></li>`).join("")}</ol>` : `<p class="empty">No appointments yet.</p>`}`, (body) => {
+      $("[data-book]", body).addEventListener("click", () => newAppointment({ customer: c }));
+      $("[data-edit]", body).addEventListener("click", () => editCustomer(c));
+      body.querySelectorAll("[data-appt]").forEach(li => li.addEventListener("click", () => showAppointment(Number(li.dataset.appt), c.appointments.find(a => a.id === Number(li.dataset.appt)))));
+    });
+  }
+
+  function editCustomer(c) {
+    openDialog(c ? `Edit ${c.name}` : `Add ${state.setup.customer_noun}`, `
+      <form class="form" novalidate>
+        <div class="two"><label>Name <input name="name" required value="${esc(c?.name || "")}"></label><label>Phone <input name="phone" type="tel" required value="${esc(c ? phoneText(c.phone) : "")}" placeholder="(310) 555-0142"></label></div>
+        <label>Email <input name="email" type="email" value="${esc(c?.email || "")}"></label>
+        <label>Notes <textarea name="notes" placeholder="Preferences, allergies, anything useful">${esc(c?.notes || "")}</textarea></label>
+        <p class="error" role="alert"></p>
+        <div class="row-actions"><button class="btn primary" type="submit">${c ? "Save changes" : `Add ${esc(state.setup.customer_noun)}`}</button><button class="btn" type="button" data-close>Cancel</button></div>
+      </form>`, (body) => {
+      const form = $("form", body);
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        try {
+          const f = Object.fromEntries(new FormData(form));
+          const r = c ? await api(`/customers/${c.id}`, { method: "PATCH", body: f }) : await api("/customers", { method: "POST", body: f });
+          dialog.close(); toast(c ? "Saved." : `Added ${r.customer.name}.`); refreshCounts();
+          if (state.section === "customers") { main.innerHTML = ""; customers(); }
+        } catch (err) { $(".error", form).textContent = err.message; }
+      });
+      form.name.focus();
+    });
+  }
+
+  // ------------------------------------------------------------ Waitlist
+  async function waitlist() {
+    const { waitlist } = await api("/waitlist");
+    const waiting = waitlist.filter(w => w.status === "waiting"), booked = waitlist.filter(w => w.status === "booked");
+    main.innerHTML = header("Waitlist", "When someone cancels, the freed slot goes to the first person waiting for it, automatically.",
+      `<button class="btn primary" data-add>Add to waitlist</button>`) + `
+      <section class="panel" style="margin-bottom:16px"><h2>Waiting</h2>${waiting.length ? `<div class="table-wrap"><table><thead><tr><th>Day</th><th>When</th><th>Customer</th><th>Service</th><th>With</th><th></th></tr></thead>
+        <tbody>${waiting.map(w => `<tr><td>${shortDay(w.day)}</td><td>${w.earliest === w.latest ? ampm(w.earliest) : `${ampm(w.earliest)}–${ampm(w.latest)}`}</td>
+          <td><b>${esc(w.customer)}</b><div class="muted">${phoneText(w.phone)}</div></td><td>${esc(w.service)}</td><td>${esc(w.staff || "Anyone")}</td>
+          <td class="row-btns"><button class="btn small danger" data-remove="${w.id}">Remove</button></td></tr>`).join("")}</tbody></table></div>` : `<p class="empty">Nobody is waiting. The receptionist offers the waitlist when a time is full.</p>`}</section>
+      <section class="panel"><h2>Filled from the waitlist</h2>${booked.length ? `<ol class="agenda">${booked.map(w => `<li><time>${shortDay(w.day)}</time><div><div class="who">${esc(w.customer)}</div><div class="what">${esc(w.service)}</div></div><span class="tag waitlist">Booked</span></li>`).join("")}</ol>` : `<p class="empty">No slots filled yet.</p>`}</section>`;
+    main.querySelectorAll("[data-remove]").forEach(b => b.addEventListener("click", async () => {
+      await api(`/waitlist/${b.dataset.remove}`, { method: "DELETE" }); toast("Removed from the waitlist."); refreshCounts(); waitlist();
+    }));
+    main.querySelector("[data-add]").addEventListener("click", () => openDialog("Add to waitlist", `
+      <form class="form" novalidate>
+        <div class="two"><label>Name <input name="customer_name" required></label><label>Phone <input name="phone" type="tel" required placeholder="(310) 555-0142"></label></div>
+        <label>Service <select name="service_id">${serviceOptions()}</select></label>
+        <div class="two"><label>Date <input type="date" name="date" value="${state.setup.now.slice(0, 10)}"></label><label>${esc(cap(state.setup.staff_noun))} <select name="staff_id">${staffOptions()}</select></label></div>
+        <div class="two"><label>Exact time <input type="time" name="time" step="900"><span class="hint">Leave empty for any time</span></label>
+          <label>Or part of day <select name="period"><option value="">Any time</option><option>morning</option><option>afternoon</option><option>evening</option></select></label></div>
+        <p class="error" role="alert"></p>
+        <div class="row-actions"><button class="btn primary" type="submit">Add to waitlist</button><button class="btn" type="button" data-close>Cancel</button></div>
+      </form>`, (body) => {
+      const form = $("form", body);
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = Object.fromEntries(new FormData(form));
+        try {
+          await api("/waitlist", { method: "POST", body: { ...f, service_id: Number(f.service_id), staff_id: f.staff_id ? Number(f.staff_id) : null } });
+          dialog.close(); toast("Added to the waitlist."); refreshCounts(); waitlist();
+        } catch (err) { $(".error", form).textContent = err.message; }
+      });
+    }));
+  }
+
+  // ------------------------------------------------------------ Services
+  async function services() {
+    await loadSetup();
+    const list = state.setup.services;
+    main.innerHTML = header("Services", "What customers can book by phone. Archived services stay in past appointments but can't be booked.",
+      `<button class="btn primary" data-add>Add service</button>`) + `
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Minutes</th><th>Price ($)</th><th>Bookable</th><th></th></tr></thead>
+      <tbody>${list.map(s => `<tr data-id="${s.id}" class="${s.active ? "" : "archived"}">
+        <td><input name="name" value="${esc(s.name)}" aria-label="Name"></td>
+        <td><input name="duration_min" type="number" min="5" max="600" step="5" value="${s.duration_min}" aria-label="Minutes"></td>
+        <td><input name="price" type="number" min="0" step="0.01" value="${(s.price_cents / 100).toFixed(2)}" aria-label="Price"></td>
+        <td><input name="active" type="checkbox" ${s.active ? "checked" : ""} aria-label="Bookable" style="width:auto"></td>
+        <td class="row-btns"><button class="btn small" data-save>Save</button><button class="btn small danger" data-del>Remove</button></td></tr>`).join("")}</tbody></table></div>`;
+    const read = (tr) => ({ name: $("[name=name]", tr).value, duration_min: Number($("[name=duration_min]", tr).value),
+      price_cents: Math.round(Number($("[name=price]", tr).value) * 100), active: $("[name=active]", tr).checked });
+    main.querySelectorAll("tr[data-id]").forEach(tr => {
+      $("[data-save]", tr).addEventListener("click", async () => {
+        try { await api(`/services/${tr.dataset.id}`, { method: "PATCH", body: read(tr) }); toast("Service saved."); services(); } catch (e) { toast(e.message, true); }
+      });
+      $("[data-del]", tr).addEventListener("click", async () => {
+        try { const r = await api(`/services/${tr.dataset.id}`, { method: "DELETE" }); toast(r.result === "archived" ? "Archived: it has bookings, so it stays in history." : "Service deleted."); services(); } catch (e) { toast(e.message, true); }
+      });
+    });
+    main.querySelector("[data-add]").addEventListener("click", () => openDialog("Add service", `
+      <form class="form" novalidate>
+        <label>Name <input name="name" required placeholder="Deep conditioning"></label>
+        <div class="two"><label>Minutes <input name="duration_min" type="number" min="5" step="5" value="30"></label><label>Price ($) <input name="price" type="number" min="0" step="0.01" value="0"></label></div>
+        <p class="error" role="alert"></p>
+        <div class="row-actions"><button class="btn primary" type="submit">Add service</button><button class="btn" type="button" data-close>Cancel</button></div>
+      </form>`, (body) => {
+      const form = $("form", body);
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = Object.fromEntries(new FormData(form));
+        try { await api("/services", { method: "POST", body: { name: f.name, duration_min: Number(f.duration_min), price_cents: Math.round(Number(f.price) * 100) } }); dialog.close(); toast("Service added."); services(); }
+        catch (err) { $(".error", form).textContent = err.message; }
+      });
+      form.name.focus();
+    }));
+  }
+
+  // ------------------------------------------------------------ Team
+  async function team() {
+    await loadSetup();
+    const noun = state.setup.staff_noun, plural = state.setup.staff_plural;
+    main.innerHTML = header("Team", `The ${esc(plural)} customers can book with. Taking someone off the schedule keeps their past appointments.`,
+      `<button class="btn" data-block>Block time</button><button class="btn primary" data-add>Add ${esc(noun)}</button>`) + `
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Takes bookings</th><th></th></tr></thead>
+      <tbody>${state.setup.staff.map(p => `<tr data-id="${p.id}" class="${p.active ? "" : "archived"}"><td><input name="name" value="${esc(p.name)}" aria-label="Name"></td>
+        <td><input type="checkbox" name="active" ${p.active ? "checked" : ""} aria-label="Takes bookings" style="width:auto"></td>
+        <td class="row-btns"><button class="btn small" data-save>Save</button><button class="btn small danger" data-del>Remove</button></td></tr>`).join("")}</tbody></table></div>`;
+    main.querySelectorAll("tr[data-id]").forEach(tr => {
+      $("[data-save]", tr).addEventListener("click", async () => {
+        try { await api(`/staff/${tr.dataset.id}`, { method: "PATCH", body: { name: $("[name=name]", tr).value, active: $("[name=active]", tr).checked } }); toast("Saved."); team(); } catch (e) { toast(e.message, true); }
+      });
+      $("[data-del]", tr).addEventListener("click", async () => {
+        try { const r = await api(`/staff/${tr.dataset.id}`, { method: "DELETE" }); toast(r.result === "archived" ? "Taken off the schedule; past appointments stay." : "Removed."); team(); } catch (e) { toast(e.message, true); }
+      });
+    });
+    main.querySelector("[data-block]").addEventListener("click", () => blockTime({ date: state.setup.now.slice(0, 10) }));
+    main.querySelector("[data-add]").addEventListener("click", () => openDialog(`Add ${noun}`, `
+      <form class="form" novalidate><label>Name <input name="name" required></label><p class="error" role="alert"></p>
+        <div class="row-actions"><button class="btn primary" type="submit">Add ${esc(noun)}</button><button class="btn" type="button" data-close>Cancel</button></div></form>`, (body) => {
+      const form = $("form", body);
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        try { await api("/staff", { method: "POST", body: { name: form.name.value } }); dialog.close(); toast("Added."); team(); } catch (err) { $(".error", form).textContent = err.message; }
+      });
+      form.name.focus();
+    }));
+  }
+
+  // ------------------------------------------------------------ Hours
+  async function hours() {
+    await loadSetup();
+    main.innerHTML = header("Opening hours", "The receptionist only offers times inside these hours.", "") + `
+      <form class="panel" data-hours><div class="hours-grid">
+        ${state.setup.hours.map(h => `<strong>${h.name}</strong>
+          <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="open-${h.weekday}" ${h.opens ? "checked" : ""}> Open</label>
+          <input type="time" name="opens-${h.weekday}" value="${h.opens || "09:00"}" step="900" aria-label="${h.name} opens">
+          <input type="time" name="closes-${h.weekday}" value="${h.closes || "18:00"}" step="900" aria-label="${h.name} closes">`).join("")}
+      </div><p class="error" role="alert" style="color:var(--error)"></p><button class="btn primary" type="submit">Save hours</button></form>`;
+    const form = main.querySelector("[data-hours]");
+    const sync = () => [0, 1, 2, 3, 4, 5, 6].forEach(d => { const on = form[`open-${d}`].checked; form[`opens-${d}`].disabled = !on; form[`closes-${d}`].disabled = !on; });
+    form.addEventListener("change", sync); sync();
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const list = [0, 1, 2, 3, 4, 5, 6].filter(d => form[`open-${d}`].checked).map(d => ({ weekday: d, opens: form[`opens-${d}`].value, closes: form[`closes-${d}`].value }));
+      try { await api("/hours", { method: "PUT", body: { hours: list } }); toast("Hours saved."); hours(); } catch (err) { $(".error", form).textContent = err.message; }
+    });
+  }
+
+  // ------------------------------------------------------------ Phone line
+  async function phone() {
+    await loadSetup();
+    const s = state.setup, origin = location.origin, endpoint = `${origin}${s.mcp_path}`;
+    main.innerHTML = header("Phone line", "How customers reach your receptionist, and how to connect it to Alexa+ or any MCP client.",
+      `<a class="btn primary" href="/b/${state.slug}" target="_blank" rel="noopener">Try a call</a>`) + `
+      <div class="split">
+        <section class="panel"><h2>Your receptionist</h2>
+          <p>Customers talk to it in the browser at <a href="/b/${state.slug}" target="_blank" rel="noopener">${esc(origin)}/b/${esc(state.slug)}</a>. It books, moves and cancels appointments, offers the waitlist and recognizes returning ${esc(s.customer_noun)}s by phone number. Every booking it makes needs a name and a phone number.</p>
+          <p>Watch bookings arrive on the <a href="/b/${state.slug}/board" target="_blank" rel="noopener">live board</a>, for a screen at the front desk.</p>
+          <h2 style="margin-top:18px">MCP endpoint</h2>
+          <code class="copy" data-copy>${esc(endpoint)}</code>
+          <div class="row-actions"><button class="btn small" data-copy-btn>Copy address</button></div>
+          <ol class="steps" style="margin-top:14px">
+            <li>Add the address above as a remote MCP server (Streamable HTTP, protocol 2025-11-25). Alexa+ calls it when your customers ask to book.</li>
+            <li>Customer tools work without a key: list services, check open slots, book, cancel, reschedule, join the waitlist, look up a returning customer.</li>
+            <li>Owner tools (the daily summary and blocking time) need your API key in the header <code>Authorization: Bearer &lt;key&gt;</code>.</li>
+          </ol>
+        </section>
+        <section class="panel"><h2>Owner API key</h2>
+          ${s.public_demo ? `<p class="muted">The demo barbershop's owner tools are open to everyone, so it has no key.</p>` : `
+          <p>${s.has_api_key ? "A key is active. Creating a new one turns the old one off right away." : "No key yet. Create one to use the owner tools from Alexa+ or another MCP client."}</p>
+          <div data-key></div>
+          <button class="btn" data-newkey>${s.has_api_key ? "Replace key" : "Create key"}</button>`}
+        </section>
+      </div>`;
+    main.querySelector("[data-copy-btn]").addEventListener("click", async () => { await navigator.clipboard.writeText(endpoint).catch(() => {}); toast("Address copied."); });
+    const btn = main.querySelector("[data-newkey]");
+    btn && btn.addEventListener("click", async () => {
+      if (s.has_api_key && !confirm("Replace the key? Anything using the old key stops working.")) return;
+      const { key } = await api("/api-key", { method: "POST", body: {} });
+      main.querySelector("[data-key]").innerHTML = `<p><b>Copy it now.</b> For your security it isn't shown again.</p><code class="copy">${esc(key)}</code>`;
+      btn.textContent = "Replace key"; s.has_api_key = true;
+    });
+  }
+
+  // ------------------------------------------------------------ Settings
+  async function settings() {
+    await loadSetup();
+    const s = state.setup;
+    const types = (await api("/api/business-types")).types;
+    main.innerHTML = header("Settings", "", "") + `
+      <form class="panel form" style="max-width:620px" data-settings>
+        <label>Business name <input name="name" value="${esc(s.name)}" required></label>
+        <div class="two">
+          <label>Type of business <select name="type">${types.map(t => `<option value="${t.id}" ${t.id === s.type ? "selected" : ""}>${esc(t.label)}</option>`).join("")}</select>
+            <span class="hint">Changes the words the receptionist uses (${esc(s.staff_plural)}, ${esc(s.customer_noun)}s). Services and team stay as they are.</span></label>
+          <label>Time zone <select name="timezone">${s.timezones.map(z => `<option value="${z}" ${z === s.timezone ? "selected" : ""}>${z.replace(/_/g, " ")}</option>`).join("")}</select></label>
+        </div>
+        <p class="error" role="alert"></p>
+        <div class="row-actions"><button class="btn primary" type="submit">Save settings</button></div>
+      </form>`;
+    const form = main.querySelector("[data-settings]");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try { await api("/settings", { method: "PATCH", body: Object.fromEntries(new FormData(form)) }); toast("Settings saved."); await loadBusinesses(); settings(); }
+      catch (err) { $(".error", form).textContent = err.message; }
+    });
+  }
+
+  // ------------------------------------------------------------ boot
+  async function loadBusinesses() {
+    const me = await api("/api/me");
+    state.me = me.account; state.businesses = me.businesses;
+    $("#me").textContent = me.account.email === "demo@frontdesk.dev" ? "Demo account (shared)" : `${me.account.name} · ${me.account.email}`;
+    $("#add-business").hidden = me.account.email === "demo@frontdesk.dev";
+    const sel = $("#business");
+    sel.innerHTML = me.businesses.map(b => `<option value="${b.slug}">${esc(b.name)}</option>`).join("");
+    sel.value = state.slug || "";
+  }
+  $("#business").addEventListener("change", async (e) => { state.slug = e.target.value; state.day = null; await loadSetup(); go("today"); });
+  $("#logout").addEventListener("click", async () => { await api("/api/auth/logout", { method: "POST", body: {} }); location.href = "/login"; });
+  $("#add-business").addEventListener("click", async () => {
+    const types = (await api("/api/business-types")).types;
+    openDialog("Add another business", `
+      <form class="form" novalidate>
+        <label>Business name <input name="business_name" required></label>
+        <div class="two"><label>Type <select name="business_type">${types.map(t => `<option value="${t.id}">${esc(t.label)}</option>`).join("")}</select></label>
+          <label>Time zone <select name="timezone">${state.setup.timezones.map(z => `<option value="${z}" ${z === state.setup.timezone ? "selected" : ""}>${z.replace(/_/g, " ")}</option>`).join("")}</select></label></div>
+        <p class="error" role="alert"></p>
+        <div class="row-actions"><button class="btn primary" type="submit">Create business</button><button class="btn" type="button" data-close>Cancel</button></div>
+      </form>`, (body) => {
+      const form = $("form", body);
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        try {
+          const r = await api("/api/businesses", { method: "POST", body: Object.fromEntries(new FormData(form)) });
+          dialog.close(); await loadBusinesses(); state.slug = r.business; state.day = null; await loadSetup(); go("today");
+        } catch (err) { $(".error", form).textContent = err.message; }
+      });
+    });
+  });
+
+  (async () => {
+    try { await loadBusinesses(); } catch (_) { return; }
+    const [slug] = location.hash.slice(1).split("/");
+    state.slug = state.businesses.some(b => b.slug === slug) ? slug : state.businesses[0]?.slug;
+    if (!state.slug) { main.innerHTML = `<p class="empty">No business yet.</p>`; return; }
+    await loadSetup();
+    if (!location.hash.includes("/")) location.hash = `${state.slug}/today`; else route();
+  })();
+})();
+</script>
+</body>
+</html>

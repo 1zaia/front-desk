@@ -8,12 +8,13 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import time as _clock
 import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-TZ = ZoneInfo(os.environ.get("FRONTDESK_TZ", "America/Los_Angeles"))
+DEFAULT_TZ = ZoneInfo("America/Los_Angeles")
 STEP_MIN = 30  # how often we offer a start time
 
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -58,7 +59,64 @@ def now() -> datetime:
     pinned = os.environ.get("FRONTDESK_NOW")
     if pinned:
         return datetime.fromisoformat(pinned).replace(tzinfo=None)
-    return datetime.now(TZ).replace(tzinfo=None)
+    return datetime.now(business_tz()).replace(tzinfo=None)
+
+
+_tz_cache: dict[str, tuple[ZoneInfo, float]] = {}
+
+
+def business_tz() -> ZoneInfo:
+    """Time zone of the business being served (FRONTDESK_TZ overrides it)."""
+    forced = os.environ.get("FRONTDESK_TZ")
+    if forced:
+        return ZoneInfo(forced)
+    from frontdesk import tenancy  # local import: tenancy imports db, which is fine, but keeps startup light
+    path = str(tenancy.current_db_path())
+    hit = _tz_cache.get(path)
+    if hit and _clock.time() - hit[1] < 30:
+        return hit[0]
+    tz = DEFAULT_TZ
+    try:
+        conn = sqlite3.connect(path)
+        try:
+            r = conn.execute("SELECT timezone FROM business WHERE id = 1").fetchone()
+        finally:
+            conn.close()
+        if r:
+            tz = ZoneInfo(r[0])
+    except Exception:
+        pass
+    _tz_cache[path] = (tz, _clock.time())
+    return tz
+
+
+# ---------------------------------------------------------------- phone numbers
+
+def normalize_phone(text: str | None) -> str:
+    """'(310) 555-0142', '310.555.0142', '+1 310 555 0142' -> '+13105550142'. Empty if it doesn't look like a number."""
+    t = normalize(text or "")
+    for word, n in {"zero": 0, "oh": 0, **NUMBER_WORDS}.items():
+        if n <= 9:
+            t = re.sub(rf"\b{word}\b", str(n), t)
+    digits = re.sub(r"\D", "", t)
+    if len(digits) == 10:
+        return "+1" + digits
+    if len(digits) == 11 and digits.startswith("1"):
+        return "+" + digits
+    if 8 <= len(digits) <= 15 and (text or "").strip().startswith("+"):
+        return "+" + digits
+    return ""
+
+
+def format_phone(phone: str) -> str:
+    if phone.startswith("+1") and len(phone) == 12:
+        return f"({phone[2:5]}) {phone[5:8]}-{phone[8:]}"
+    return phone
+
+
+def say_phone(phone: str) -> str:
+    """How the receptionist mentions a number out loud: only the last digits."""
+    return f"the number ending in {' '.join(phone[-4:])}" if phone else "no number"
 
 
 def normalize(text: str) -> str:
@@ -166,7 +224,7 @@ def parse_time(text: str) -> time:
     elif suffix in ("am", "in the morning") and hour == 12:
         hour = 0
     elif not suffix and 1 <= hour <= 7:
-        hour += 12  # "at 3" means 3 PM at a barbershop
+        hour += 12  # "at 3" means 3 PM for an appointment
     try:
         return time(hour, minute)
     except ValueError as e:
@@ -193,6 +251,14 @@ def say_time(h: time) -> str:
     if h.hour == 12 and h.minute == 0:
         return "noon"
     return f"{hour} {suffix}" if h.minute == 0 else f"{hour}:{h.minute:02d} {suffix}"
+
+
+def a_service(name: str) -> str:
+    """'a haircut', 'an initial assessment', 'highlights' (for the middle of a sentence)."""
+    n = name.lower()
+    if n.endswith("s") and not n.endswith("ss"):
+        return n
+    return f"{'an' if n[:1] in 'aeiou' else 'a'} {n}"
 
 
 def dollars(cents: int) -> str:
@@ -222,10 +288,17 @@ SERVICE_SYNONYMS = {
 }
 
 
+def staff_words(conn: sqlite3.Connection) -> dict:
+    """The words this business uses: {'staff': 'barber', 'staff_plural': 'barbers', 'customer': 'customer', ...}."""
+    from frontdesk import business_types
+    r = conn.execute("SELECT type FROM business WHERE id = 1").fetchone()
+    return business_types.get(r["type"] if r else None)
+
+
 def find_service(conn: sqlite3.Connection, name: str) -> Service:
     target = _normalize_service(name)
     target = SERVICE_SYNONYMS.get(target, target)
-    rows = conn.execute("SELECT id, name, duration_min, price_cents FROM services").fetchall()
+    rows = conn.execute("SELECT id, name, duration_min, price_cents FROM services WHERE active = 1").fetchall()
     services = [Service(**dict(r)) for r in rows]
     exact = [s for s in services if _normalize_service(s.name) == target]
     if exact:
@@ -248,15 +321,19 @@ def find_staff(conn: sqlite3.Connection, name: str | None) -> Staff | None:
     if not name or normalize(name) in ("anyone", "any", "whoever", "no preference", "anybody"):
         return None
     target = normalize(name)
-    for r in conn.execute("SELECT id, name FROM staff ORDER BY id").fetchall():
+    rows = conn.execute("SELECT id, name FROM staff WHERE active = 1 ORDER BY id").fetchall()
+    for r in rows:
         if normalize(r["name"]) == target or target in normalize(r["name"]) or normalize(r["name"]) in target:
             return Staff(r["id"], r["name"])
-    names = join_and([r["name"] for r in conn.execute("SELECT name FROM staff ORDER BY id")])
-    raise BookingError(f"{name} doesn't work here. Our barbers are {names}.")
+    for r in rows:  # "Dr. Patel" from "Patel", "Ms. Lopez" from "Lopez"
+        if any(w == target for w in normalize(r["name"]).replace(".", " ").split()):
+            return Staff(r["id"], r["name"])
+    names = join_and([r["name"] for r in rows])
+    raise BookingError(f"{name} doesn't work here. Our {staff_words(conn)['staff_plural']} are {names}.")
 
 
 def all_staff(conn: sqlite3.Connection) -> list[Staff]:
-    return [Staff(r["id"], r["name"]) for r in conn.execute("SELECT id, name FROM staff ORDER BY id")]
+    return [Staff(r["id"], r["name"]) for r in conn.execute("SELECT id, name FROM staff WHERE active = 1 ORDER BY id")]
 
 
 def hours_for(conn: sqlite3.Connection, d: date) -> tuple[time, time] | None:
@@ -267,7 +344,7 @@ def hours_for(conn: sqlite3.Connection, d: date) -> tuple[time, time] | None:
 
 
 def _busy(conn: sqlite3.Connection, staff_id: int, d: date, ignore_id: int | None = None):
-    """Busy intervals of a barber on a day: confirmed appointments plus time the owner blocked."""
+    """Busy intervals of a staff member on a day: confirmed appointments plus time the owner blocked."""
     rows = conn.execute(
         "SELECT id, start, end FROM appointments WHERE staff_id = ? AND status = 'confirmed' "
         "AND substr(start, 1, 10) = ?",
@@ -310,7 +387,7 @@ def open_slots(
     period: str | None = None,
     staff: Staff | None = None,
 ) -> list[dict]:
-    """Start times where the service fits, per barber, every STEP_MIN minutes."""
+    """Start times where the service fits, per staff member, every STEP_MIN minutes."""
     window = hours_for(conn, d)
     if window is None:
         return []
@@ -346,10 +423,16 @@ def book(
     moment: datetime,
     staff: Staff | None = None,
     source: str = "assistant",
+    phone: str | None = None,
+    notes: str = "",
 ) -> dict:
-    customer = " ".join((customer or "").split()).title()
+    """Books one appointment. The name is always required; the phone number too, unless the owner adds it by hand."""
+    customer = clean_name(customer)
     if not customer:
         raise BookingError("Can I get your name?")
+    phone = normalize_phone(phone)
+    if not phone and source == "assistant":
+        raise BookingError("Can I get a phone number for the booking?")
     end = start + timedelta(minutes=service.duration_min)
     _check_window(conn, start, end, moment)
     candidates = [staff] if staff else all_staff(conn)
@@ -357,9 +440,16 @@ def book(
     if chosen is None:
         who = f" with {staff.name}" if staff else ""
         raise BookingError(f"Sorry, {say_time(start.time())}{who} is already taken.")
+    customer_id = None
+    if phone:
+        record = upsert_customer(conn, customer, phone)
+        customer_id = record["id"]
+        customer = record["name"] if same_person(customer, record["name"]) else customer
     cur = conn.execute(
-        "INSERT INTO appointments (customer, service_id, staff_id, start, end, source) VALUES (?, ?, ?, ?, ?, ?)",
-        (customer, service.id, chosen.id, start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes"), source),
+        "INSERT INTO appointments (customer, service_id, staff_id, start, end, source, customer_id, phone, notes) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (customer, service.id, chosen.id, start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes"), source,
+         customer_id, phone, (notes or "").strip()),
     )
     conn.commit()
     return get_appointment(conn, cur.lastrowid)
@@ -367,7 +457,8 @@ def book(
 
 def get_appointment(conn: sqlite3.Connection, appt_id: int) -> dict:
     r = conn.execute(
-        "SELECT a.id, a.customer, a.start, a.end, a.status, a.source, s.name AS service, s.price_cents, p.name AS staff "
+        "SELECT a.id, a.customer, a.start, a.end, a.status, a.source, a.phone, a.notes, a.customer_id, "
+        "s.id AS service_id, s.name AS service, s.price_cents, p.id AS staff_id, p.name AS staff "
         "FROM appointments a JOIN services s ON s.id = a.service_id JOIN staff p ON p.id = a.staff_id "
         "WHERE a.id = ?",
         (appt_id,),
@@ -375,16 +466,18 @@ def get_appointment(conn: sqlite3.Connection, appt_id: int) -> dict:
     return dict(r)
 
 
-def find_appointments(conn: sqlite3.Connection, customer: str, moment: datetime, d: date | None = None) -> list[dict]:
-    """Upcoming confirmed appointments for a customer (accent-insensitive, matches part of the name)."""
-    target = normalize(customer)
+def find_appointments(conn: sqlite3.Connection, customer: str | None, moment: datetime, d: date | None = None,
+                      phone: str | None = None) -> list[dict]:
+    """Upcoming confirmed appointments for a customer: by phone number when given, otherwise by (part of) the name."""
+    target = normalize(customer or "")
+    phone = normalize_phone(phone)
     rows = conn.execute(
-        "SELECT id, customer, start FROM appointments WHERE status = 'confirmed' AND start >= ? ORDER BY start",
+        "SELECT id, customer, start, phone FROM appointments WHERE status = 'confirmed' AND start >= ? ORDER BY start",
         (moment.isoformat(timespec="minutes"),),
     ).fetchall()
     found = []
     for r in rows:
-        if target and target in normalize(r["customer"]):
+        if (phone and r["phone"] == phone) or (not phone and target and target in normalize(r["customer"])):
             if d is None or r["start"].startswith(d.isoformat()):
                 found.append(get_appointment(conn, r["id"]))
     return found
@@ -464,11 +557,13 @@ def add_to_waitlist(
     at: time | None = None,
     period: str | None = None,
     staff: Staff | None = None,
+    phone: str | None = None,
 ) -> dict:
     """Puts a customer on the waitlist for a day, a period of the day or one specific start time."""
-    customer = " ".join((customer or "").split()).title()
+    customer = clean_name(customer)
     if not customer:
         raise BookingError("Can I get your name for the waitlist?")
+    phone = normalize_phone(phone)
     window = hours_for(conn, d)
     if window is None:
         raise BookingError(f"We're closed {say_date_on(d, moment.date())}, so there's no waitlist that day.")
@@ -489,8 +584,9 @@ def add_to_waitlist(
     if same:  # asked twice (e.g. "waitlist, please" after already being added): keep a single entry
         return _waitlist_entry(conn, same["id"])
     cur = conn.execute(
-        "INSERT INTO waitlist (customer, service_id, staff_id, day, earliest, latest) VALUES (?, ?, ?, ?, ?, ?)",
-        (customer, service.id, staff.id if staff else None, d.isoformat(), earliest.strftime("%H:%M"), latest.strftime("%H:%M")),
+        "INSERT INTO waitlist (customer, service_id, staff_id, day, earliest, latest, phone) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (customer, service.id, staff.id if staff else None, d.isoformat(), earliest.strftime("%H:%M"), latest.strftime("%H:%M"),
+         phone),
     )
     conn.commit()
     return _waitlist_entry(conn, cur.lastrowid)
@@ -498,7 +594,7 @@ def add_to_waitlist(
 
 def _waitlist_entry(conn: sqlite3.Connection, entry_id: int) -> dict:
     r = conn.execute(
-        "SELECT w.id, w.customer, w.day, w.earliest, w.latest, w.status, w.appointment_id, s.name AS service, "
+        "SELECT w.id, w.customer, w.phone, w.day, w.earliest, w.latest, w.status, w.appointment_id, s.name AS service, "
         "p.name AS staff FROM waitlist w JOIN services s ON s.id = w.service_id LEFT JOIN staff p ON p.id = w.staff_id "
         "WHERE w.id = ?",
         (entry_id,),
@@ -529,7 +625,7 @@ def fill_from_waitlist(conn: sqlite3.Connection, d: date, moment: datetime, free
             options.sort(key=lambda s: (s["time"] != freed.strftime("%H:%M"), s["time"]))
         choice = options[0]
         appt = book(conn, entry["customer"], service, datetime.combine(d, time.fromisoformat(choice["time"])), moment,
-                    find_staff(conn, choice["staff"]), source="waitlist")
+                    find_staff(conn, choice["staff"]), source="waitlist", phone=entry.get("phone"))
         conn.execute("UPDATE waitlist SET status = 'booked', appointment_id = ? WHERE id = ?", (appt["id"], entry["id"]))
         conn.commit()
         booked.append(appt)
@@ -545,25 +641,76 @@ def is_usual(service: str | None) -> bool:
     return normalize(service or "").strip(" .!") in USUAL
 
 
-def customer_profile(conn: sqlite3.Connection, customer: str, moment: datetime) -> dict | None:
-    """Visit history of a customer: usual service and barber, last visit and upcoming appointments."""
-    target = normalize(customer)
-    if not target:
+def clean_name(name: str | None) -> str:
+    name = " ".join((name or "").split())
+    return name.title() if name == name.lower() or name == name.upper() else name
+
+
+def same_person(said: str, on_file: str) -> bool:
+    """'Sam' and 'Sam Torres' are the same person; 'Ana' and 'Sam Torres' are not (a shared family phone)."""
+    a, b = normalize(said).split(), normalize(on_file).split()
+    return bool(a) and all(w in b for w in a)
+
+
+def upsert_customer(conn: sqlite3.Connection, name: str, phone: str, email: str = "", notes: str = "") -> dict:
+    """Finds the customer by phone number, or adds them. A fuller name replaces a partial one ('Sam' -> 'Sam Torres')."""
+    phone = normalize_phone(phone)
+    name = clean_name(name)
+    if not phone:
+        raise BookingError("That doesn't look like a phone number.")
+    r = conn.execute("SELECT * FROM customers WHERE phone = ?", (phone,)).fetchone()
+    if r is None:
+        cur = conn.execute("INSERT INTO customers (name, phone, email, notes) VALUES (?, ?, ?, ?)", (name, phone, email, notes))
+        conn.commit()
+        return get_customer(conn, cur.lastrowid)
+    if name and same_person(r["name"], name) and len(name) > len(r["name"]):
+        conn.execute("UPDATE customers SET name = ? WHERE id = ?", (name, r["id"]))
+        conn.commit()
+    return get_customer(conn, r["id"])
+
+
+def get_customer(conn: sqlite3.Connection, customer_id: int) -> dict:
+    r = conn.execute("SELECT id, name, phone, email, notes, created_at FROM customers WHERE id = ?", (customer_id,)).fetchone()
+    if r is None:
+        raise BookingError("That customer doesn't exist.")
+    return dict(r)
+
+
+def customer_by_phone(conn: sqlite3.Connection, phone: str | None) -> dict | None:
+    phone = normalize_phone(phone)
+    if not phone:
         return None
+    r = conn.execute("SELECT id FROM customers WHERE phone = ?", (phone,)).fetchone()
+    return get_customer(conn, r["id"]) if r else None
+
+
+def customer_profile(conn: sqlite3.Connection, customer: str | None, moment: datetime, phone: str | None = None) -> dict | None:
+    """Visit history of a customer, by phone number (preferred) or name: usual service and staff member,
+    last visit and upcoming appointments."""
     rows = conn.execute(
-        "SELECT a.id, a.customer, a.start, a.status, s.name AS service, p.name AS staff FROM appointments a "
-        "JOIN services s ON s.id = a.service_id JOIN staff p ON p.id = a.staff_id "
+        "SELECT a.id, a.customer, a.customer_id, a.phone, a.start, a.status, s.name AS service, p.name AS staff "
+        "FROM appointments a JOIN services s ON s.id = a.service_id JOIN staff p ON p.id = a.staff_id "
         "WHERE a.status IN ('confirmed', 'completed') ORDER BY a.start"
     ).fetchall()
-    wanted = target.split()
-    matches = [dict(r) for r in rows if all(w in normalize(r["customer"]).split() for w in wanted)]
-    if not matches:
-        return None
-    names: dict[str, int] = {}
-    for m in matches:
-        names[m["customer"]] = names.get(m["customer"], 0) + 1
-    full_name = max(names, key=names.get)
-    mine = [m for m in matches if m["customer"] == full_name]
+    record = customer_by_phone(conn, phone)
+    if record:
+        mine = [dict(r) for r in rows if r["customer_id"] == record["id"] or r["phone"] == record["phone"]]
+        full_name = record["name"]
+    else:
+        target = normalize(customer or "")
+        if not target:
+            return None
+        wanted = target.split()
+        matches = [dict(r) for r in rows if all(w in normalize(r["customer"]).split() for w in wanted)]
+        if not matches:
+            return None
+        names: dict[str, int] = {}
+        for m in matches:
+            names[m["customer"]] = names.get(m["customer"], 0) + 1
+        full_name = max(names, key=names.get)
+        mine = [m for m in matches if m["customer"] == full_name]
+        phones = [m["phone"] for m in mine if m["phone"]]
+        record = customer_by_phone(conn, phones[-1]) if phones else None
     now_iso = moment.isoformat(timespec="minutes")
     past = [m for m in mine if m["start"] < now_iso]
     upcoming = [m for m in mine if m["start"] >= now_iso and m["status"] == "confirmed"]
@@ -576,9 +723,11 @@ def customer_profile(conn: sqlite3.Connection, customer: str, moment: datetime) 
 
     return {
         "customer": full_name,
+        "customer_id": record["id"] if record else None,
+        "phone": record["phone"] if record else "",
         "visits": len(past),
         "usual_service": most_common("service"),
-        "usual_barber": most_common("staff"),
+        "usual_staff": most_common("staff"),
         "last_visit": past[-1]["start"] if past else None,
         "upcoming": [get_appointment(conn, m["id"]) for m in upcoming],
     }
@@ -596,10 +745,10 @@ def block_time(
     period: str | None = None,
     reason: str = "",
 ) -> dict:
-    """Takes time off a barber's schedule. Existing appointments stay; they are returned as conflicts."""
+    """Takes time off someone's schedule. Existing appointments stay; they are returned as conflicts."""
     window = hours_for(conn, d)
     if window is None:
-        raise BookingError(f"The shop is already closed {say_date_on(d, moment.date())}.")
+        raise BookingError(f"We're already closed {say_date_on(d, moment.date())}.")
     opens, closes = window
     if start is None and end is None and period:
         p = PERIOD_ALIASES.get(normalize(period), normalize(period))
@@ -636,13 +785,24 @@ def blocks_on(conn: sqlite3.Connection, d: date) -> list[dict]:
 
 # ---------------------------------------------------------------- demo data
 
+DEMO_PHONES = {
+    "Chris Miller": "+13105550101", "Kevin Lee": "+13105550102", "Luke Rogers": "+13105550103",
+    "Andre Wilson": "+13105550104", "Frank Moore": "+13105550105", "Mark Davis": "+13105550106",
+    "Tom Allen": "+13105550107", "Ryan Nunez": "+13105550108", "Greg Reyes": "+13105550109",
+    "Sam Torres": "+13105550142",
+}
+
+
 def seed_demo(conn: sqlite3.Connection, today: date) -> None:
-    """Adds a few booked slots over the next days so the schedule looks real."""
+    """Adds customers and a few booked slots over the next days so the demo schedule looks real."""
     if conn.execute("SELECT COUNT(*) FROM appointments").fetchone()[0]:
         return
     services = {s["name"]: s["id"] for s in conn.execute("SELECT id, name FROM services")}
     staff = {p["name"]: p["id"] for p in conn.execute("SELECT id, name FROM staff")}
+    if not {"Haircut", "Beard trim", "Haircut and beard", "Hot towel shave"} <= set(services) or not {"Marcus", "Diego"} <= set(staff):
+        return  # the demo data only fits the demo barbershop
     durations = {s["id"]: s["duration_min"] for s in conn.execute("SELECT id, duration_min FROM services")}
+    customer_ids = {name: upsert_customer(conn, name, phone)["id"] for name, phone in DEMO_PHONES.items()}
     template = [
         (0, "10:00", "Chris Miller", "Haircut", "Marcus"),
         (0, "15:30", "Kevin Lee", "Haircut and beard", "Diego"),
@@ -663,18 +823,23 @@ def seed_demo(conn: sqlite3.Connection, today: date) -> None:
         (-28, "16:00", "Kevin Lee", "Haircut and beard", "Diego"),
         (-10, "09:00", "Sam Torres", "Beard trim", "Diego"),
     ]
-    for days, hhmm, customer, service, barber in history:
-        d = today + timedelta(days=days)
-        while hours_for(conn, d) is None:
-            d -= timedelta(days=1)
+
+    def insert(d: date, hhmm: str, customer: str, service: str, person: str, status: str, source: str) -> None:
         start = datetime.combine(d, time.fromisoformat(hhmm))
         end = start + timedelta(minutes=durations[services[service]])
         conn.execute(
-            "INSERT INTO appointments (customer, service_id, staff_id, start, end, status, source) "
-            "VALUES (?, ?, ?, ?, ?, 'completed', 'history')",
-            (customer, services[service], staff[barber], start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")),
+            "INSERT INTO appointments (customer, service_id, staff_id, start, end, status, source, customer_id, phone) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (customer, services[service], staff[person], start.isoformat(timespec="minutes"),
+             end.isoformat(timespec="minutes"), status, source, customer_ids[customer], DEMO_PHONES[customer]),
         )
-    for days, hhmm, customer, service, barber in template:
+
+    for days, hhmm, customer, service, person in history:
+        d = today + timedelta(days=days)
+        while hours_for(conn, d) is None:
+            d -= timedelta(days=1)
+        insert(d, hhmm, customer, service, person, "completed", "history")
+    for days, hhmm, customer, service, person in template:
         d = today + timedelta(days=days)
         window = hours_for(conn, d)
         if window is None:
@@ -683,8 +848,5 @@ def seed_demo(conn: sqlite3.Connection, today: date) -> None:
         end = start + timedelta(minutes=durations[services[service]])
         if start.time() < window[0] or end.time() > window[1]:
             continue
-        conn.execute(
-            "INSERT INTO appointments (customer, service_id, staff_id, start, end) VALUES (?, ?, ?, ?, ?)",
-            (customer, services[service], staff[barber], start.isoformat(timespec="minutes"), end.isoformat(timespec="minutes")),
-        )
+        insert(d, hhmm, customer, service, person, "confirmed", "assistant")
     conn.commit()

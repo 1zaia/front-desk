@@ -61,7 +61,7 @@ def test_booking_through_the_conversation():
     model = FakeModel([
         [("check_availability", {"date": "Friday", "service": "haircut", "period": "morning"})],
         "For a haircut on Friday morning I have 9 AM, 9:30 AM, or 10 AM. Which works best?",
-        [("book_appointment", {"customer_name": "John", "service": "haircut", "date": "Friday", "time": "9 AM"})],
+        [("book_appointment", {"customer_phone": "3105550100", "customer_name": "John", "service": "haircut", "date": "Friday", "time": "9 AM"})],
         "You're all set, John! A haircut on Friday at 9 AM.",
     ])
 
@@ -91,7 +91,7 @@ def test_booking_through_the_conversation():
 
 def test_tool_error_goes_back_to_the_model():
     model = FakeModel([
-        [("book_appointment", {"customer_name": "Ana", "service": "beard", "date": "Sunday", "time": "10 AM"})],
+        [("book_appointment", {"customer_phone": "3105550100", "customer_name": "Ana", "service": "beard", "date": "Sunday", "time": "10 AM"})],
         "Sorry, we're closed on Sunday. Would another day work?",
     ])
     r = anyio.run(lambda: agent.respond("beard Sunday 10 AM, Ana", server=_server(), converse=model))
@@ -127,7 +127,7 @@ def test_want_the_usual_is_asked_before_anything_else(monkeypatch):
     # Nova Lite tried to jump to open times right after the greeting; the question must reach the customer first
     model = FakeModel([
         [("customer_history", {"customer_name": "Sam"})],
-        [("check_availability", {"date": "today", "service": "beard trim", "barber": "Diego"})],
+        [("check_availability", {"date": "today", "service": "beard trim", "staff": "Diego"})],
         "For a beard trim today with Diego, I have 9 AM.",
     ])
     r = anyio.run(lambda: agent.respond("Hey, it's Sam.", server=_server(), converse=model))
@@ -138,11 +138,11 @@ def test_want_the_usual_is_asked_before_anything_else(monkeypatch):
 
 def test_taken_time_is_said_as_is():
     model = FakeModel([
-        [("book_appointment", {"customer_name": "Ana", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        [("book_appointment", {"customer_phone": "3105550101", "customer_name": "Ana", "service": "haircut", "date": "Friday", "time": "10 AM"})],
         "Booked, Ana.",
-        [("book_appointment", {"customer_name": "Bea", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        [("book_appointment", {"customer_phone": "3105550102", "customer_name": "Bea", "service": "haircut", "date": "Friday", "time": "10 AM"})],
         "Booked, Bea.",
-        [("book_appointment", {"customer_name": "Nick", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        [("book_appointment", {"customer_phone": "3105550100", "customer_name": "Nick", "service": "haircut", "date": "Friday", "time": "10 AM"})],
         "For a haircut Friday I have 9 AM or 11 AM.",  # never reached: the tool's answer is spoken
     ])
 
@@ -157,9 +157,9 @@ def test_taken_time_is_said_as_is():
 
 def test_waitlist_needs_the_customers_ok():
     model = FakeModel([
-        [("join_waitlist", {"customer_name": "Nick", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        [("join_waitlist", {"customer_phone": "3105550100", "customer_name": "Nick", "service": "haircut", "date": "Friday", "time": "10 AM"})],
         "Sorry, 10 AM is taken. Want me to put you on the waitlist?",
-        [("join_waitlist", {"customer_name": "Nick", "service": "haircut", "date": "Friday", "time": "10 AM"})],
+        [("join_waitlist", {"customer_phone": "3105550100", "customer_name": "Nick", "service": "haircut", "date": "Friday", "time": "10 AM"})],
         "Got it, Nick.",
     ])
 
@@ -262,7 +262,7 @@ def test_all_without_quota_explains(monkeypatch):
 def test_auto_mode_falls_back_to_rehearsal(monkeypatch):
     """In the deployment (FRONTDESK_AGENT=auto), if Bedrock fails the conversation continues in rehearsal mode."""
     from starlette.testclient import TestClient
-    from frontdesk import server
+    from frontdesk import server, web_api
 
     async def fail(*a, **k):
         raise agent.AgentError("The AWS account has no daily Bedrock quota")
@@ -270,8 +270,8 @@ def test_auto_mode_falls_back_to_rehearsal(monkeypatch):
     monkeypatch.setenv("FRONTDESK_AGENT", "auto")
     monkeypatch.setenv("FRONTDESK_MCP_URL", "local")
     monkeypatch.setattr(agent, "respond", fail)
-    monkeypatch.setattr(server, "_utterances_by_ip", {})
-    monkeypatch.setattr(server, "_bedrock_down", {"until": 0.0, "notice": ""})
+    monkeypatch.setattr(web_api, "_utterances_by_ip", {})
+    monkeypatch.setattr(web_api, "_bedrock_down", {"until": 0.0, "notice": ""})
     with TestClient(server.app()) as c:
         r = c.post("/api/conversation", json={"text": "how much is a haircut?"})
     data = r.json()
@@ -289,3 +289,35 @@ def test_auto_mode_falls_back_to_rehearsal(monkeypatch):
     with TestClient(server.app()) as c:
         r = c.post("/api/conversation", json={"text": "hi"})
     assert r.status_code == 200 and calls == [] and r.json()["notice"]
+
+
+def test_caller_id_fills_in_a_missing_or_partial_phone(monkeypatch):
+    """Nova sometimes leaves the phone out or shortens it ("555-0142"): the caller ID number is used instead."""
+    monkeypatch.setenv("FRONTDESK_DEMO", "1")
+    model = FakeModel([
+        [("customer_history", {"customer_phone": "555-0142"})],
+        [("book_appointment", {"customer_name": "Sam", "service": "the usual", "date": "Friday", "time": "11 AM"})],
+        "You're all set, Sam!",
+    ])
+    context = {"caller_phone": "+13105550142", "caller_name": "Sam Torres", "who": "customer"}
+
+    async def run():
+        r1 = await agent.respond("Hey, it's Sam.", server=_server(), converse=model, context=context)
+        r2 = await agent.respond("Yes, Friday at 11.", session_id=r1["session"], server=_server(), converse=model, context=context)
+        return r1, r2
+
+    r1, r2 = anyio.run(run)
+    assert r1["calls"][0]["arguments"]["customer_phone"] == "+13105550142"
+    assert r1["reply"].startswith("Welcome back, Sam!")
+    booked = r2["calls"][0]
+    assert booked["arguments"]["customer_phone"] == "+13105550142" and booked["ok"]
+    assert "Diego" in booked["speech"]
+    # the caller ID is in the instructions, so the model doesn't ask for it
+    assert "(310) 555-0142" in model.calls[0]["system"][0]["text"] and "Sam Torres" in model.calls[0]["system"][0]["text"]
+
+
+def test_a_full_number_the_customer_gives_is_kept():
+    assert agent._with_caller("book_appointment", {"customer_phone": "(212) 555-0101"}, {"caller_phone": "+13105550142"}) == \
+        {"customer_phone": "(212) 555-0101"}
+    assert agent._with_caller("list_services", {}, {"caller_phone": "+13105550142"}) == {}
+    assert agent._with_caller("book_appointment", {}, {"caller_phone": ""}) == {}
