@@ -6,7 +6,7 @@ A customer calls and says "Anything for a haircut this morning?". Front Desk che
 
 **Live:** https://18-190-98-99.sslip.io (Chrome or Edge for voice) · **Demo call:** `/demo` · **MCP endpoint per business:** `https://18-190-98-99.sslip.io/b/<business>/mcp`
 
-**Demo video (2:56):** VIDEO_LINK
+**Demo video (2:56):** https://youtu.be/Wf_45QO8XDY
 
 ## What's in it
 - **Many businesses, one server.** Owners sign up, pick a type of business and get a working setup: services, team, opening hours and the right words ("stylists" and "clients" for a salon, "groomers" for a pet shop, "patients" for a clinic). Each business keeps its schedule in its own database, and one account can run several businesses.
