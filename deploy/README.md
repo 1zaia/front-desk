@@ -29,7 +29,7 @@ Optional parameters (add `--parameter-overrides Name=value`):
 - `InstanceType`: `t3.micro` (default) or `t3.small`.
 
 ## Update after a merge
-Double-click `deploy\update.cmd`. It uses **Systems Manager Run Command** (the instance role already allows it) to pull the latest `main`, install dependencies and restart the service, **keeping the same IP and address**. The result is saved to `deploy\update-result.txt`. The schedule database is recreated with the demo data.
+Double-click `deploy\update.cmd`. It uses **Systems Manager Run Command** (the instance role already allows it) to pull the latest `main`, install dependencies and restart the service, **keeping the same IP and address**. The result is saved to `deploy\update-result.txt`. The schedule database is recreated with the demo data. If the `aws login` session has expired, use `deploy\login-and-update.cmd`, which signs in first (confirm the session in the browser tab it opens) and then runs the update.
 
 To start from scratch instead (new IP and address):
 

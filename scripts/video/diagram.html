@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>How Front Desk works</title>
+<style>
+  :root { --ink: #0f2a30; --soft: #5b6b6e; --line: #c9d3d1; --cyan: #22b8cf; --bg: #f3f5f3; --deep: #0d2a31; }
+  * { box-sizing: border-box; }
+  body { margin: 0; width: 1920px; height: 1080px; background: var(--bg); font-family: "Inter", system-ui, sans-serif; color: var(--ink); padding: 90px 110px; }
+  h1 { font-family: "Inter Display", "Inter", sans-serif; font-size: 64px; margin: 0 0 14px; letter-spacing: -1px; }
+  p.lead { font-size: 26px; color: var(--soft); margin: 0 0 70px; }
+  .flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 56px; position: relative; }
+  .box { background: #fff; border: 2px solid var(--line); border-radius: 18px; padding: 28px 28px 30px; position: relative; min-height: 250px; }
+  .box.key { border-color: var(--cyan); box-shadow: 0 0 0 6px rgba(34,184,207,.12); }
+  .box:not(:last-child)::after { content: ""; position: absolute; right: -50px; top: 50%; width: 44px; height: 3px; background: var(--ink); }
+  .box:not(:last-child)::before { content: ""; position: absolute; right: -52px; top: calc(50% - 8px); border: 9px solid transparent; border-left: 12px solid var(--ink); }
+  .tag { font-size: 17px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: var(--cyan); margin-bottom: 12px; }
+  .box h2 { font-size: 32px; margin: 0 0 14px; }
+  .box ul { margin: 0; padding-left: 22px; font-size: 21px; line-height: 1.5; color: var(--soft); }
+  .aws { margin-top: 70px; background: var(--deep); color: #e8f1f0; border-radius: 18px; padding: 34px 40px; display: grid; grid-template-columns: 260px 1fr; gap: 30px; align-items: center; }
+  .aws .tag { color: #7fdbe8; margin: 0; font-size: 20px; }
+  .aws .items { display: flex; flex-wrap: wrap; gap: 14px 16px; }
+  .aws span { border: 1.5px solid #3c5e64; border-radius: 999px; padding: 10px 20px; font-size: 22px; }
+  code { font-family: "DejaVu Sans Mono", monospace; font-size: 19px; color: var(--ink); }
+</style></head>
+<body>
+  <h1>How it works</h1>
+  <p class="lead">Every turn of the conversation is a real MCP round trip.</p>
+  <div class="flow">
+    <div class="box"><div class="tag">Caller</div><h2>Voice</h2><ul><li>Alexa+ (MCP client)</li><li>Browser simulator for the demo</li><li>Caller ID for regulars</li></ul></div>
+    <div class="box"><div class="tag">Agent</div><h2>Amazon Bedrock</h2><ul><li>Amazon Nova Pro</li><li>Converse API with tool use</li><li>Reads <code>tools/list</code>, calls <code>tools/call</code></li></ul></div>
+    <div class="box key"><div class="tag">Front Desk</div><h2>MCP server</h2><ul><li>Streamable HTTP, 2025-11-25</li><li>9 annotated tools, structured output</li><li>One endpoint per business</li></ul></div>
+    <div class="box"><div class="tag">Owner</div><h2>Schedule</h2><ul><li>Owner app: calendar, customers, waitlist</li><li>Live board</li><li>Everything also by hand</li></ul></div>
+  </div>
+  <div class="aws"><div class="tag">Runs on AWS</div>
+    <div class="items"><span>Amazon EC2 + HTTPS</span><span>IAM role: Nova only, no keys</span><span>AWS CloudFormation</span><span>Systems Manager (no SSH)</span><span>Amazon Bedrock</span></div>
+  </div>
+</body></html>
