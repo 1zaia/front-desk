@@ -6,6 +6,8 @@ A customer calls and says "Anything for a haircut this morning?". Front Desk che
 
 **Live:** https://18-190-98-99.sslip.io (Chrome or Edge for voice) · **Demo call:** `/demo` · **MCP endpoint per business:** `https://18-190-98-99.sslip.io/b/<business>/mcp`
 
+**Demo video (2:56):** https://youtu.be/Wf_45QO8XDY
+
 ## What's in it
 - **Many businesses, one server.** Owners sign up, pick a type of business and get a working setup: services, team, opening hours and the right words ("stylists" and "clients" for a salon, "groomers" for a pet shop, "patients" for a clinic). Each business keeps its schedule in its own database, and one account can run several businesses.
 - **Owner accounts.** Email and password (scrypt), HttpOnly session cookies, rate-limited sign-in. A shared demo account opens the sample barbershop.
@@ -91,6 +93,8 @@ One EC2 instance with HTTPS (Caddy) and an IAM role limited to Amazon Nova, crea
 python -m pytest -q
 python scripts/check_video_script.py rehearsal   # the demo video script, line by line (or "bedrock" for Amazon Nova)
 ```
+
+The demo video is recorded and edited from code against the deployed app with the real Amazon Nova agent; see [`scripts/video/README.md`](scripts/video/README.md).
 
 To inspect the MCP server with the MCP Inspector, connect to `http://127.0.0.1:8000/b/main-street-barbers/mcp` (Streamable HTTP).
 

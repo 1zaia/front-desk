@@ -8,6 +8,9 @@ Start-Transcript -Path $result -Force | Out-Null
 try {
     $instance = aws cloudformation describe-stacks --stack-name front-desk --region $region --profile $awsProfile `
         --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue" --output text
+    if ($LASTEXITCODE -ne 0) {
+        throw "The AWS CLI failed (exit code $LASTEXITCODE). If the sign-in expired, run login-and-update.cmd instead: it runs aws login first."
+    }
     if (-not $instance -or $instance -eq "None") { throw "Could not find the front-desk stack instance." }
     Write-Host "Instance: $instance"
 
